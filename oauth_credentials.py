@@ -1,0 +1,478 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+OAuth Credentials Manager
+Handles OAuth credential creation, JSON download, and file organization
+"""
+
+import asyncio
+import json
+import os
+import re
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any
+
+from google_cloud_automation import GoogleCloudAutomation
+from error_handler import retry_async, log_error, ErrorType, ErrorSeverity
+
+class OAuthCredentialsManager(GoogleCloudAutomation):
+    """Manages OAuth credential creation and JSON file handling"""
+    
+    def __init__(self):
+        super().__init__()
+        self.current_project_id = None
+        self.current_email = None
+        
+    @retry_async(context="oauth_credentials_creation")
+    async def create_oauth_credentials(self, credential_name: str = None) -> Dict[str, Any]:
+        """Create OAuth 2.0 client credentials"""
+        try:
+            if not credential_name:
+                credential_name = f"OAuth_Client_{int(time.time())}"
+            
+            self.logger.info(f"🔑 Creating OAuth credentials: {credential_name}")
+            
+            # Navigate to credentials page
+            await self.page.goto("https://console.cloud.google.com/apis/credentials")
+            await self.wait_for_navigation()
+            await self.take_screenshot("11_credentials_page")
+            
+            # Click Create Credentials
+            create_creds_selectors = [
+                'button:has-text("Create Credentials")',
+                'button:has-text("CREATE CREDENTIALS")',
+                '[data-value="create_credentials"]',
+                'button[aria-label*="Create credentials"]'
+            ]
+            
+            if not await self.safe_click(create_creds_selectors):
+                raise Exception("Could not find Create Credentials button")
+            
+            await self.human_delay(1, 2)
+            
+            # Select OAuth client ID
+            oauth_selectors = [
+                'a:has-text("OAuth client ID")',
+                'div:has-text("OAuth client ID")',
+                '[data-value="oauth_client_id"]'
+            ]
+            
+            if not await self.safe_click(oauth_selectors):
+                raise Exception("Could not find OAuth client ID option")
+            
+            await self.wait_for_navigation()
+            await self.take_screenshot("12_oauth_form")
+            
+            # Select application type (Desktop application)
+            app_type_selectors = [
+                'select[name="applicationType"]',
+                'mat-select[formcontrolname="applicationType"]',
+                'input[value="DESKTOP"]'
+            ]
+            
+            for selector in app_type_selectors:
+                try:
+                    if 'select' in selector:
+                        await self.page.select_option(selector, "DESKTOP")
+                    elif 'mat-select' in selector:
+                        await self.safe_click(selector)
+                        await self.human_delay(1, 2)
+                        await self.safe_click('mat-option:has-text("Desktop application")')
+                    else:
+                        await self.safe_click(selector)
+                    break
+                except Exception:
+                    continue
+            
+            # Enter credential name
+            name_selectors = [
+                'input[name="name"]',
+                'input[formcontrolname="name"]',
+                'input[aria-label*="Name"]',
+                'input[placeholder*="name"]'
+            ]
+            
+            name_entered = False
+            for selector in name_selectors:
+                try:
+                    await self.page.wait_for_selector(selector, timeout=5000)
+                    await self.page.fill(selector, "")  # Clear existing text
+                    await self.human_type(selector, credential_name)
+                    name_entered = True
+                    break
+                except Exception:
+                    continue
+            
+            if not name_entered:
+                self.logger.warning("Could not find name field, proceeding without custom name")
+            
+            # Click Create button
+            create_selectors = [
+                'button:has-text("Create")',
+                'button:has-text("CREATE")',
+                'button[type="submit"]',
+                'input[type="submit"]'
+            ]
+            
+            if not await self.safe_click(create_selectors):
+                raise Exception("Could not find Create button for OAuth credentials")
+            
+            await self.wait_for_navigation()
+            await self.take_screenshot("13_credentials_created")
+            
+            # Wait for credentials to be created
+            await asyncio.sleep(3)
+            
+            self.logger.info("✅ OAuth credentials created successfully")
+            return {
+                'success': True,
+                'credential_name': credential_name,
+                'message': 'OAuth credentials created successfully'
+            }
+            
+        except Exception as e:
+            log_error(e, "oauth_credentials_creation", additional_data={'credential_name': credential_name})
+            if self.config.automation.screenshot_on_error:
+                await self.take_screenshot(f"error_oauth_creation_{credential_name}")
+            raise
+    
+    @retry_async(context="json_download")
+    async def download_json_file(self) -> Dict[str, Any]:
+        """Download the OAuth credentials JSON file"""
+        try:
+            self.logger.info("📥 Downloading OAuth JSON file...")
+            
+            # Look for download button
+            download_selectors = [
+                'button:has-text("Download JSON")',
+                'button:has-text("DOWNLOAD JSON")',
+                'a:has-text("Download")',
+                'button[aria-label*="Download"]',
+                '[data-value="download"]'
+            ]
+            
+            download_clicked = False
+            for selector in download_selectors:
+                try:
+                    if await self.page.locator(selector).count() > 0:
+                        await self.safe_click(selector)
+                        download_clicked = True
+                        break
+                except Exception:
+                    continue
+            
+            if not download_clicked:
+                # Try alternative approach - look for existing credentials and download
+                await self._find_and_download_existing_credential()
+            
+            # Wait for download to complete
+            await asyncio.sleep(5)
+            
+            # Find the downloaded file
+            downloaded_file = await self._find_downloaded_json()
+            
+            if downloaded_file:
+                self.logger.info(f"✅ JSON file downloaded: {downloaded_file}")
+                return {
+                    'success': True,
+                    'file_path': downloaded_file,
+                    'message': 'JSON file downloaded successfully'
+                }
+            else:
+                raise Exception("Could not locate downloaded JSON file")
+                
+        except Exception as e:
+            log_error(e, "json_download")
+            if self.config.automation.screenshot_on_error:
+                await self.take_screenshot("error_json_download")
+            raise
+    
+    async def _find_and_download_existing_credential(self):
+        """Find existing OAuth credential and download it"""
+        try:
+            # Look for existing OAuth credentials in the table
+            credential_rows = await self.page.locator('tr').all()
+            
+            for row in credential_rows:
+                # Check if this row contains an OAuth client
+                if await row.locator('text="OAuth 2.0 Client IDs"').count() > 0:
+                    # Look for download button in this row
+                    download_btn = row.locator('button[aria-label*="Download"]')
+                    if await download_btn.count() > 0:
+                        await download_btn.click()
+                        return True
+            
+            return False
+            
+        except Exception:
+            return False
+    
+    async def _find_downloaded_json(self) -> Optional[str]:
+        """Find the most recently downloaded JSON file"""
+        try:
+            downloads_dir = Path(self.config.paths.downloads_dir)
+            
+            # Look for JSON files in downloads directory
+            json_files = list(downloads_dir.glob("*.json"))
+            
+            if not json_files:
+                return None
+            
+            # Find the most recent file
+            latest_file = max(json_files, key=lambda f: f.stat().st_mtime)
+            
+            # Verify it's a valid OAuth JSON file
+            try:
+                with open(latest_file, 'r') as f:
+                    data = json.load(f)
+                    if 'installed' in data or 'web' in data:
+                        return str(latest_file)
+            except Exception:
+                pass
+            
+            return None
+            
+        except Exception:
+            return None
+    
+    @retry_async(context="json_organization")
+    async def organize_json_file(self, source_path: str, email: str) -> Dict[str, Any]:
+        """Rename and move JSON file to organized location"""
+        try:
+            self.logger.info(f"📁 Organizing JSON file for {email}")
+            
+            # Create organized filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_email = email.replace('@', '_').replace('.', '_')
+            new_filename = f"oauth_credentials_{safe_email}_{timestamp}.json"
+            
+            # Create output directory
+            output_dir = Path(self.config.paths.output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Move and rename file
+            source = Path(source_path)
+            destination = output_dir / new_filename
+            
+            if source.exists():
+                source.rename(destination)
+                
+                self.logger.info(f"✅ JSON file organized: {destination}")
+                return {
+                    'success': True,
+                    'original_path': source_path,
+                    'new_path': str(destination),
+                    'filename': new_filename,
+                    'message': 'JSON file organized successfully'
+                }
+            else:
+                raise Exception(f"Source file not found: {source_path}")
+                
+        except Exception as e:
+            log_error(e, "json_organization", additional_data={'source_path': source_path, 'email': email})
+            raise
+    
+    async def complete_oauth_setup(self, email: str, password: str, project_name: str = None) -> Dict[str, Any]:
+        """Complete the entire OAuth setup process for a single account"""
+        result = {
+            'success': False,
+            'email': email,
+            'steps_completed': [],
+            'errors': [],
+            'files_created': [],
+            'screenshots': [],
+            'start_time': datetime.now(),
+            'end_time': None
+        }
+        
+        try:
+            self.current_email = email
+            self.logger.info(f"Starting complete OAuth setup for {email}")
+            
+            # Step 0: Initialize browser first
+            try:
+                self.logger.info("🌐 Initializing browser...")
+                if not await self.initialize_browser():
+                    raise Exception("Failed to initialize browser")
+                result['steps_completed'].append("browser_initialization")
+                self.logger.info("✅ Step 0: Browser initialization completed")
+            except Exception as e:
+                result['errors'].append(f"Browser initialization failed: {str(e)}")
+                raise
+            
+            # Generate project name if not provided
+            if not project_name:
+                project_name = self._generate_project_name(email)
+            
+            self.current_project_id = project_name
+            
+            # Step 1: Login to Google Cloud
+            try:
+                login_success = await self.login_to_google_cloud(email, password)
+                if login_success:
+                    result['steps_completed'].append("login")
+                    self.logger.info("✅ Step 1: Login completed")
+                else:
+                    # Login returned False - likely email verification required
+                    result['steps_completed'].append("verification_required")
+                    result['errors'].append("Email verification required - webdriver closed for this email")
+                    self.logger.info("📧 Email verification required - skipping to next email")
+                    
+                    # Mark as verification case (not a failure)
+                    result['verification_required'] = True
+                    result['success'] = False
+                    result['end_time'] = datetime.now()
+                    return result
+            except Exception as e:
+                result['errors'].append(f"Login failed: {str(e)}")
+                raise
+            
+            # Step 2: Create/Select Project
+            try:
+                await self.create_or_select_project(project_name)
+                result['steps_completed'].append("project_creation")
+                self.logger.info("✅ Step 2: Project creation completed")
+            except Exception as e:
+                result['errors'].append(f"Project creation failed: {str(e)}")
+                raise
+            
+            # Step 3: Enable Gmail API
+            try:
+                await self.enable_gmail_api()
+                result['steps_completed'].append("gmail_api")
+                self.logger.info("✅ Step 3: Gmail API enabled")
+            except Exception as e:
+                result['errors'].append(f"Gmail API enable failed: {str(e)}")
+                raise
+            
+            # Step 4: Setup OAuth Consent Screen
+            try:
+                await self.setup_oauth_consent_screen()
+                result['steps_completed'].append("oauth_consent")
+                self.logger.info("✅ Step 4: OAuth consent screen configured")
+            except Exception as e:
+                result['errors'].append(f"OAuth consent setup failed: {str(e)}")
+                raise
+            
+            # Step 5: Create OAuth Credentials
+            try:
+                cred_result = await self.create_oauth_credentials()
+                result['steps_completed'].append("oauth_credentials")
+                self.logger.info("✅ Step 5: OAuth credentials created")
+            except Exception as e:
+                result['errors'].append(f"OAuth credentials creation failed: {str(e)}")
+                raise
+            
+            # Step 6: Download JSON File
+            try:
+                download_result = await self.download_json_file()
+                result['steps_completed'].append("json_download")
+                result['files_created'].append(download_result['file_path'])
+                self.logger.info("✅ Step 6: JSON file downloaded")
+            except Exception as e:
+                result['errors'].append(f"JSON download failed: {str(e)}")
+                raise
+            
+            # Step 7: Organize JSON File
+            try:
+                organize_result = await self.organize_json_file(
+                    download_result['file_path'], 
+                    email
+                )
+                result['steps_completed'].append("json_organization")
+                result['files_created'].append(organize_result['new_path'])
+                self.logger.info("✅ Step 7: JSON file organized")
+            except Exception as e:
+                result['errors'].append(f"JSON organization failed: {str(e)}")
+                raise
+            
+            # Mark as successful
+            result['success'] = True
+            result['end_time'] = datetime.now()
+            result['duration'] = (result['end_time'] - result['start_time']).total_seconds()
+            
+            self.logger.info(f"🎉 OAuth setup completed successfully for {email}")
+            return result
+            
+        except Exception as e:
+            result['end_time'] = datetime.now()
+            result['duration'] = (result['end_time'] - result['start_time']).total_seconds()
+            
+            log_error(e, "complete_oauth_setup", additional_data={
+                'email': email,
+                'steps_completed': result['steps_completed'],
+                'project_name': project_name
+            })
+            
+            self.logger.error(f"❌ OAuth setup failed for {email}: {str(e)}")
+            raise
+        
+        finally:
+            # Cleanup browser resources
+            try:
+                await self.cleanup()
+            except Exception:
+                pass
+    
+    def _generate_project_name(self, email: str) -> str:
+        """Generate a unique project name based on email"""
+        # Extract username from email
+        username = email.split('@')[0]
+        # Clean username for project name
+        clean_username = re.sub(r'[^a-zA-Z0-9]', '', username)[:10]
+        # Add timestamp for uniqueness
+        timestamp = int(time.time())
+        return f"gmail-oauth-{clean_username}-{timestamp}"
+    
+    async def generate_report(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Generate a comprehensive report of OAuth setup results"""
+        try:
+            report = {
+                'summary': {
+                    'total_accounts': len(results),
+                    'successful': 0,
+                    'failed': 0,
+                    'success_rate': 0.0
+                },
+                'details': [],
+                'errors': [],
+                'files_created': [],
+                'generated_at': datetime.now().isoformat()
+            }
+            
+            for result in results:
+                if result['success']:
+                    report['summary']['successful'] += 1
+                else:
+                    report['summary']['failed'] += 1
+                
+                report['details'].append({
+                    'email': result['email'],
+                    'success': result['success'],
+                    'steps_completed': result['steps_completed'],
+                    'errors': result['errors'],
+                    'files_created': result['files_created'],
+                    'duration': result.get('duration', 0)
+                })
+                
+                # Collect all errors
+                report['errors'].extend(result['errors'])
+                
+                # Collect all files created
+                report['files_created'].extend(result['files_created'])
+            
+            # Calculate success rate
+            if report['summary']['total_accounts'] > 0:
+                report['summary']['success_rate'] = (
+                    report['summary']['successful'] / 
+                    report['summary']['total_accounts'] * 100
+                )
+            
+            return report
+            
+        except Exception as e:
+            log_error(e, "report_generation")
+            raise

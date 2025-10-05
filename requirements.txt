@@ -1,0 +1,12 @@
+# Gmail OAuth Automation - Playwright Version
+# Core Playwright dependencies
+playwright
+
+# Data processing (simplified)
+openpyxl
+
+# Configuration and utilities
+python-dotenv
+
+# HTTP and networking
+requests
