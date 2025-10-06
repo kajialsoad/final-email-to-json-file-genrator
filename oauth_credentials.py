@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple, Any
 
 from google_cloud_automation import GoogleCloudAutomation
 from error_handler import retry_async, log_error, ErrorType, ErrorSeverity
+from email_reporter import email_reporter
 
 class OAuthCredentialsManager(GoogleCloudAutomation):
     """Manages OAuth credential creation and JSON file handling"""
@@ -394,12 +395,50 @@ class OAuthCredentialsManager(GoogleCloudAutomation):
             result['end_time'] = datetime.now()
             result['duration'] = (result['end_time'] - result['start_time']).total_seconds()
             
+            # Save success report
+            try:
+                success_screenshot = await self.take_screenshot(f"success_{email.replace('@', '_')}")
+                email_reporter.save_success_report(
+                    email=email,
+                    oauth_data={
+                        'project_name': project_name,
+                        'steps_completed': result['steps_completed'],
+                        'files_created': result['files_created'],
+                        'duration': result['duration']
+                    },
+                    screenshot_path=success_screenshot,
+                    additional_data={
+                        'automation_version': 'playwright_enhanced',
+                        'completion_time': result['end_time'].isoformat()
+                    }
+                )
+            except Exception as e:
+                self.logger.warning(f"⚠️ Failed to save success report: {str(e)}")
+            
             self.logger.info(f"🎉 OAuth setup completed successfully for {email}")
             return result
             
         except Exception as e:
             result['end_time'] = datetime.now()
             result['duration'] = (result['end_time'] - result['start_time']).total_seconds()
+            
+            # Save error report
+            try:
+                error_screenshot = await self.take_screenshot(f"error_{email.replace('@', '_')}")
+                email_reporter.save_error_report(
+                    email=email,
+                    error_type="oauth_setup_failure",
+                    error_message=str(e),
+                    screenshot_path=error_screenshot,
+                    additional_data={
+                        'steps_completed': result['steps_completed'],
+                        'project_name': project_name,
+                        'duration': result['duration'],
+                        'automation_version': 'playwright_enhanced'
+                    }
+                )
+            except Exception as report_error:
+                self.logger.warning(f"⚠️ Failed to save error report: {str(report_error)}")
             
             log_error(e, "complete_oauth_setup", additional_data={
                 'email': email,

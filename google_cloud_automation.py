@@ -12,6 +12,7 @@ from datetime import datetime
 
 from playwright_automation import PlaywrightAutomationEngine
 from error_handler import retry_async, log_error, ErrorType
+from email_reporter import email_reporter
 
 class GoogleCloudAutomation(PlaywrightAutomationEngine):
     """Google Cloud Console automation using Playwright"""
@@ -138,31 +139,42 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             await self.wait_for_navigation()
             await self.take_screenshot("03_after_email")
             
-            # Wait for password field and enter password (do this BEFORE checking for challenges)
-            password_selectors = [
-                'input[type="password"]',
-                'input[name="password"]',
-                'input[id="password"]',
-                'input[autocomplete="current-password"]'
-            ]
+            # Check for challenges BEFORE trying to enter password
+            challenges = await self.check_for_challenges()
+            if any(challenges.values()):
+                self.logger.warning(f"⚠️ Challenges detected after email entry: {challenges}")
+                return await self._handle_challenges_before_password(email, challenges)
             
-            password_entered = False
-            for selector in password_selectors:
-                try:
-                    await self.page.wait_for_selector(selector, timeout=10000)
-                    await self.human_delay(1, 2)
-                    await self.human_type(selector, password)
-                    password_entered = True
-                    self.logger.info("✅ Password entered successfully")
-                    break
-                except Exception as e:
-                    self.logger.debug(f"Password selector {selector} failed: {str(e)}")
-                    continue
+            # Smart Password Handling Logic
+            self.logger.info("🔐 Smart Password Handling - Checking if password is available...")
+            
+            if not password or password.strip() == "":
+                self.logger.warning("❌ No password provided - closing browser and generating report")
+                await self._save_error_report(email, "no_password", "No password provided for this account")
+                await self._close_browser_for_verification()
+                return False
+            
+            # Password exists - try to enter it
+            self.logger.info("✅ Password available - attempting to fill password field...")
+            password_entered = await self._enter_password_with_fallbacks(password)
             
             if not password_entered:
+                # Before raising exception, check if CAPTCHA appeared
+                challenges = await self.check_for_challenges()
+                if challenges['captcha'] or challenges['recaptcha']:
+                    self.logger.warning("🤖 CAPTCHA detected when trying to find password field")
+                    return await self._handle_challenges_before_password(email, challenges)
+                
+                # No password field found and no CAPTCHA - might be verification required
+                self.logger.warning("⚠️ Password field not found - checking for verification requirements...")
+                challenges = await self.check_for_challenges()
+                if any(challenges.values()):
+                    return await self._handle_challenges_after_password(email, challenges)
+                
                 raise Exception("Could not find password input field")
             
-            # Click password next button
+            # Password entered successfully - click next button
+            self.logger.info("✅ Password entered - clicking Next button...")
             password_next_selectors = [
                 'button[id="passwordNext"]',
                 'button:has-text("Next")',
@@ -176,26 +188,12 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             await self.wait_for_navigation()
             await self.take_screenshot("04_after_password")
             
-            # Now check for challenges after password submission
+            # Smart Verification Check AFTER password submission
+            self.logger.info("🔍 Checking for verification requirements after password entry...")
             challenges = await self.check_for_challenges()
             if any(challenges.values()):
-                self.logger.warning(f"⚠️ Challenges detected: {challenges}")
-                
-                # Handle CAPTCHA with manual intervention
-                if challenges['captcha']:
-                    return await self._handle_captcha_manual_intervention(email)
-                
-                if challenges['account_blocked']:
-                    raise Exception("Account appears to be blocked or suspended")
-                
-                if challenges['two_factor']:
-                    self.logger.warning("⚠️ Two-factor authentication required")
-                    # Handle as verification email - save report and close browser
-                    return await self._handle_email_verification(email, "two_factor_verification")
-                
-                if challenges['email_verification']:
-                    self.logger.warning("⚠️ Email verification required")
-                    return await self._handle_email_verification(email)
+                self.logger.warning(f"⚠️ Verification/Challenges detected after password entry: {challenges}")
+                return await self._handle_challenges_after_password(email, challenges)
             
             # Verify successful login
             await asyncio.sleep(3)
@@ -210,6 +208,161 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             if self.config.automation.screenshot_on_error:
                 await self.take_screenshot(f"error_login_{email.replace('@', '_')}")
             raise
+    
+    async def _enter_password_with_fallbacks(self, password: str) -> bool:
+        """Enter password with multiple fallback selectors and enhanced challenge detection"""
+        try:
+            # First, check for challenges before attempting password entry
+            self.logger.info("🔍 Checking for challenges before password entry...")
+            challenges = await self.check_for_challenges()
+            
+            if any(challenges.values()):
+                self.logger.warning(f"⚠️ Challenges detected before password entry: {challenges}")
+                return False
+            
+            password_selectors = [
+                'input[type="password"]',
+                'input[name="password"]',
+                'input[id="password"]',
+                'input[autocomplete="current-password"]',
+                'input[aria-label*="password"]',
+                'input[placeholder*="password"]',
+                'input[data-initial-value=""]',  # Additional fallback
+                'input[aria-describedby*="password"]'  # Additional fallback
+            ]
+            
+            for selector in password_selectors:
+                try:
+                    # Wait for password field with shorter timeout to detect challenges faster
+                    await self.page.wait_for_selector(selector, timeout=5000)
+                    
+                    # Double-check for challenges after password field appears
+                    challenges = await self.check_for_challenges()
+                    if any(challenges.values()):
+                        self.logger.warning(f"⚠️ Challenges detected after password field appeared: {challenges}")
+                        return False
+                    
+                    await self.human_delay(1, 2)
+                    await self.human_type(selector, password)
+                    self.logger.info("✅ Password entered successfully")
+                    return True
+                except Exception as e:
+                    self.logger.debug(f"Password selector {selector} failed: {str(e)}")
+                    continue
+            
+            return False
+            
+        except Exception as e:
+            log_error(e, "_enter_password_with_fallbacks")
+            return False
+    
+    async def _handle_challenges_before_password(self, email: str, challenges: Dict[str, bool]) -> bool:
+        """Handle challenges that appear before password entry"""
+        try:
+            # Handle CAPTCHA/reCAPTCHA
+            if challenges['captcha'] or challenges['recaptcha']:
+                self.logger.warning("🤖 CAPTCHA/reCAPTCHA detected before password entry")
+                return await self._handle_captcha_manual_intervention(email)
+            
+            # Handle two-factor authentication
+            if challenges['two_factor']:
+                self.logger.warning("📱 Two-factor authentication required before password")
+                return await self._handle_email_verification(email, "two_factor_verification")
+            
+            # Handle email verification
+            if challenges['email_verification']:
+                self.logger.warning("📧 Email verification required before password")
+                return await self._handle_email_verification(email)
+            
+            # Handle account blocked
+            if challenges['account_blocked']:
+                self.logger.error("🚫 Account blocked/suspended before password entry")
+                self.logger.info("📋 Account Blocked Handling Flow:")
+                self.logger.info("   1. Taking screenshot for report")
+                self.logger.info("   2. Saving blocked account report")
+                self.logger.info("   3. Closing browser cleanly")
+                self.logger.info("   4. Continuing to next email")
+                
+                await self._save_error_report(email, "account_blocked", "Account appears to be blocked or suspended")
+                await self._close_browser_for_verification()
+                self.logger.info("✅ Account blocked handled - browser closed, moving to next email")
+                return False
+            
+            # Handle unusual activity
+            if challenges['unusual_activity']:
+                self.logger.warning("⚠️ Unusual activity detected before password entry")
+                self.logger.info("📋 Unusual Activity Handling Flow:")
+                self.logger.info("   1. Taking screenshot for report")
+                self.logger.info("   2. Saving unusual activity report")
+                self.logger.info("   3. Closing browser cleanly")
+                self.logger.info("   4. Continuing to next email")
+                
+                await self._save_error_report(email, "unusual_activity", "Unusual activity detected - additional verification required")
+                await self._close_browser_for_verification()
+                self.logger.info("✅ Unusual activity handled - browser closed, moving to next email")
+                return False
+            
+            return False
+            
+        except Exception as e:
+            log_error(e, "_handle_challenges_before_password", email)
+            return False
+    
+    async def _handle_challenges_after_password(self, email: str, challenges: Dict[str, bool]) -> bool:
+        """Handle challenges that appear AFTER password entry - always close browser and generate report"""
+        try:
+            self.logger.info("📋 Post-Password Challenge Handling Strategy:")
+            self.logger.info("   1. Password was successfully entered")
+            self.logger.info("   2. Verification/Challenge detected after password")
+            self.logger.info("   3. Generating appropriate report")
+            self.logger.info("   4. Closing browser and moving to next email")
+            
+            # Handle CAPTCHA/reCAPTCHA after password
+            if challenges['captcha'] or challenges['recaptcha']:
+                self.logger.warning("🤖 CAPTCHA/reCAPTCHA detected after password entry")
+                return await self._handle_captcha_manual_intervention(email)
+            
+            # Handle two-factor authentication after password
+            if challenges['two_factor']:
+                self.logger.warning("📱 Two-factor authentication required after password")
+                return await self._handle_email_verification(email, "two_factor_verification")
+            
+            # Handle email verification after password
+            if challenges['email_verification']:
+                self.logger.warning("📧 Email verification required after password")
+                return await self._handle_email_verification(email)
+            
+            # Handle account blocked after password
+            if challenges['account_blocked']:
+                self.logger.error("🚫 Account blocked/suspended after password entry")
+                await self._save_error_report(email, "account_blocked", "Account appears to be blocked or suspended after password entry")
+                await self._close_browser_for_verification()
+                self.logger.info("✅ Account blocked handled - browser closed, moving to next email")
+                return False
+            
+            # Handle unusual activity after password
+            if challenges['unusual_activity']:
+                self.logger.warning("⚠️ Unusual activity detected after password entry")
+                await self._save_error_report(email, "unusual_activity", "Unusual activity detected after password entry - additional verification required")
+                await self._close_browser_for_verification()
+                self.logger.info("✅ Unusual activity handled - browser closed, moving to next email")
+                return False
+            
+            # If no specific challenge type detected but challenges exist
+            self.logger.warning("⚠️ Unknown verification challenge detected after password entry")
+            await self._save_error_report(email, "unknown_verification", "Unknown verification challenge detected after password entry")
+            await self._close_browser_for_verification()
+            self.logger.info("✅ Unknown verification handled - browser closed, moving to next email")
+            return False
+            
+        except Exception as e:
+            log_error(e, "_handle_challenges_after_password", email)
+            # Ensure browser is closed even if error occurs
+            try:
+                await self._close_browser_for_verification()
+            except:
+                pass
+            return False
     
     async def _check_if_logged_in(self) -> bool:
         """Check if user is already logged in to Google Cloud"""
@@ -238,13 +391,13 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             return False
     
     async def _handle_captcha_manual_intervention(self, email: str) -> bool:
-        """Handle CAPTCHA with manual intervention - keep browser open"""
+        """Handle CAPTCHA detection - save report and close browser to continue to next email"""
         try:
-            self.logger.warning("🤖 CAPTCHA detected! Manual intervention required.")
-            self.logger.info("📋 CAPTCHA Handling Instructions:")
-            self.logger.info("   1. Browser will stay open for manual CAPTCHA solving")
-            self.logger.info("   2. Please solve the CAPTCHA manually in the browser")
-            self.logger.info("   3. After solving, the automation will continue automatically")
+            self.logger.warning("🤖 CAPTCHA detected! Skipping this email and moving to next.")
+            self.logger.info("📋 CAPTCHA Handling Strategy:")
+            self.logger.info("   1. CAPTCHA/reCAPTCHA detected during login")
+            self.logger.info("   2. Saving detailed report with screenshot")
+            self.logger.info("   3. Closing browser and continuing to next email")
             
             # Take screenshot for report
             captcha_screenshot = await self.take_screenshot(f"captcha_detected_{email.replace('@', '_')}")
@@ -252,156 +405,147 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             # Save CAPTCHA report
             await self._save_captcha_report(email, captcha_screenshot)
             
-            # Wait for CAPTCHA to be solved (check every 5 seconds)
-            max_wait_time = 300  # 5 minutes maximum wait
-            wait_interval = 5    # Check every 5 seconds
-            elapsed_time = 0
+            # Close browser immediately
+            self.logger.info("🔄 Closing browser to continue with next email...")
+            await self._close_browser_for_verification()
             
-            self.logger.info("⏳ Waiting for CAPTCHA to be solved manually...")
-            
-            while elapsed_time < max_wait_time:
-                await asyncio.sleep(wait_interval)
-                elapsed_time += wait_interval
-                
-                # Check if CAPTCHA is still present
-                challenges = await self.check_for_challenges()
-                if not challenges['captcha']:
-                    self.logger.info("✅ CAPTCHA solved! Continuing automation...")
-                    
-                    # Continue with login verification
-                    await asyncio.sleep(3)
-                    if await self._check_if_logged_in():
-                        self.logger.info("✅ Successfully logged into Google Cloud Console")
-                        return True
-                    else:
-                        # Try to continue the login process
-                        await self.wait_for_navigation()
-                        await asyncio.sleep(2)
-                        if await self._check_if_logged_in():
-                            return True
-                
-                # Show progress
-                remaining_time = max_wait_time - elapsed_time
-                self.logger.info(f"⏳ Still waiting for CAPTCHA... ({remaining_time}s remaining)")
-            
-            # Timeout reached
-            self.logger.error("⏰ CAPTCHA solving timeout reached (5 minutes)")
-            raise Exception("CAPTCHA solving timeout - manual intervention took too long")
+            # Return False to indicate this email should be skipped
+            return False
             
         except Exception as e:
-            self.logger.error(f"❌ Error in CAPTCHA manual intervention: {str(e)}")
-            raise
+            self.logger.error(f"❌ Error in CAPTCHA handling: {str(e)}")
+            # Ensure browser is closed even if error occurs
+            try:
+                await self._close_browser_for_verification()
+            except:
+                pass
+            return False
     
     async def _save_captcha_report(self, email: str, screenshot_path: str):
-        """Save CAPTCHA detection report"""
+        """Save CAPTCHA detection report using email reporter"""
         try:
-            from datetime import datetime
-            import json
-            from pathlib import Path
+            # Use the comprehensive email reporter
+            report_path = email_reporter.save_captcha_report(
+                email=email,
+                screenshot_path=screenshot_path,
+                additional_data={
+                    "browser_url": self.page.url if self.page else "unknown",
+                    "automation_step": "google_cloud_login",
+                    "detection_method": "enhanced_captcha_detection"
+                }
+            )
             
-            # Create reports directory if it doesn't exist
-            reports_dir = Path("reports")
-            reports_dir.mkdir(exist_ok=True)
-            
-            # Create CAPTCHA report
-            report = {
-                "timestamp": datetime.now().isoformat(),
-                "email": email,
-                "event": "captcha_detected",
-                "screenshot": screenshot_path,
-                "status": "manual_intervention_required",
-                "message": "CAPTCHA detected during login process - manual solving required"
-            }
-            
-            # Save report file
-            report_filename = f"captcha_report_{email.replace('@', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            report_path = reports_dir / report_filename
-            
-            with open(report_path, 'w', encoding='utf-8') as f:
-                json.dump(report, f, indent=2, ensure_ascii=False)
-            
-            self.logger.info(f"📄 CAPTCHA report saved: {report_path}")
+            if report_path:
+                self.logger.info(f"📄 CAPTCHA report saved: {report_path}")
+            else:
+                self.logger.warning("⚠️ Failed to save CAPTCHA report")
             
         except Exception as e:
             self.logger.error(f"❌ Failed to save CAPTCHA report: {str(e)}")
     
     async def _handle_email_verification(self, email: str, verification_type: str = "email_verification") -> bool:
-        """Handle email/two-factor verification - save report and close webdriver for this email"""
+        """Handle email verification with proper browser cleanup and error flow"""
         try:
-            if verification_type == "two_factor_verification":
-                self.logger.warning("📱 Two-factor verification detected! Handling gracefully...")
-                self.logger.info("📋 Two-Factor Verification Handling:")
-            else:
-                self.logger.warning("📧 Email verification detected! Handling gracefully...")
-                self.logger.info("📋 Email Verification Handling:")
+            self.logger.warning(f"📧 {verification_type.replace('_', ' ').title()} detected!")
+            self.logger.info("📋 Verification Handling Flow:")
+            self.logger.info("   1. Taking screenshot for report")
+            self.logger.info("   2. Saving verification report")
+            self.logger.info("   3. Closing browser cleanly")
+            self.logger.info("   4. Continuing to next email")
             
-            self.logger.info("   1. Saving verification report")
-            self.logger.info("   2. Closing webdriver for this email")
-            self.logger.info("   3. Will continue with next email")
+            # Step 1: Take screenshot for report
+            verification_screenshot = await self.take_screenshot(f"{verification_type}_{email.replace('@', '_')}")
             
-            # Take screenshot for report
-            screenshot_prefix = "two_factor_detected" if verification_type == "two_factor_verification" else "verification_detected"
-            verification_screenshot = await self.take_screenshot(f"{screenshot_prefix}_{email.replace('@', '_')}")
-            
-            # Save verification report
+            # Step 2: Save verification report
             await self._save_verification_report(email, verification_screenshot, verification_type)
             
-            # Close browser for this email
+            # Step 3: Close browser for this email
             await self._close_browser_for_verification()
             
-            # Return False to indicate this email needs verification (skip to next)
+            # Step 4: Log completion and return False to continue to next email
             verification_msg = "Two-factor verification" if verification_type == "two_factor_verification" else "Email verification"
-            self.logger.info(f"✅ {verification_msg} handled - moving to next email")
-            return False
+            self.logger.info(f"✅ {verification_msg} handled - browser closed, moving to next email")
+            return False  # Return False to indicate this email should be skipped
             
         except Exception as e:
             self.logger.error(f"❌ Error in verification handling: {str(e)}")
+            # Ensure browser is closed even on error
+            try:
+                await self._close_browser_for_verification()
+            except Exception:
+                pass
             return False
     
     async def _save_verification_report(self, email: str, screenshot_path: str, verification_type: str = "email_verification"):
-        """Save email/two-factor verification report"""
+        """Save email/two-factor verification report using email reporter"""
         try:
-            from datetime import datetime
-            import json
-            from pathlib import Path
+            # Use the comprehensive email reporter
+            report_path = email_reporter.save_verification_report(
+                email=email,
+                verification_type=verification_type,
+                screenshot_path=screenshot_path,
+                additional_data={
+                    "browser_url": self.page.url if self.page else "unknown",
+                    "automation_step": "google_cloud_login",
+                    "detection_method": "enhanced_challenge_detection"
+                }
+            )
             
-            # Create reports directory if it doesn't exist
-            reports_dir = Path("reports")
-            reports_dir.mkdir(exist_ok=True)
-            
-            # Create verification report based on type
-            if verification_type == "two_factor_verification":
-                event = "two_factor_verification_required"
-                message = "Two-factor verification required - please check your phone and verify manually"
-                report_prefix = "two_factor_report"
+            if report_path:
+                self.logger.info(f"📄 Verification report saved: {report_path}")
             else:
-                event = "email_verification_required"
-                message = "Email verification required - please check email and verify manually"
-                report_prefix = "verification_report"
-            
-            report = {
-                "timestamp": datetime.now().isoformat(),
-                "email": email,
-                "event": event,
-                "verification_type": verification_type,
-                "screenshot": screenshot_path,
-                "status": "verification_pending",
-                "message": message,
-                "action_taken": "webdriver_closed_for_this_email",
-                "next_action": "continue_with_next_email"
-            }
-            
-            # Save report file
-            report_filename = f"{report_prefix}_{email.replace('@', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            report_path = reports_dir / report_filename
-            
-            with open(report_path, 'w', encoding='utf-8') as f:
-                json.dump(report, f, indent=2, ensure_ascii=False)
-            
-            self.logger.info(f"📄 Verification report saved: {report_path}")
+                self.logger.warning("⚠️ Failed to save verification report")
             
         except Exception as e:
             self.logger.error(f"❌ Failed to save verification report: {str(e)}")
+    
+    async def _save_error_report(self, email: str, error_type: str, error_message: str):
+        """Save error report using email reporter"""
+        try:
+            # Take screenshot for error report
+            error_screenshot = await self.take_screenshot(f"error_{error_type}_{email.replace('@', '_')}")
+            
+            # Use the comprehensive email reporter
+            if error_type == "account_blocked":
+                report_path = email_reporter.save_blocked_report(
+                    email=email,
+                    screenshot_path=error_screenshot,
+                    additional_data={
+                        "browser_url": self.page.url if self.page else "unknown",
+                        "automation_step": "google_cloud_login",
+                        "detection_method": "enhanced_challenge_detection"
+                    }
+                )
+            elif error_type == "unusual_activity":
+                report_path = email_reporter.save_unusual_activity_report(
+                    email=email,
+                    screenshot_path=error_screenshot,
+                    additional_data={
+                        "browser_url": self.page.url if self.page else "unknown",
+                        "automation_step": "google_cloud_login",
+                        "detection_method": "enhanced_challenge_detection"
+                    }
+                )
+            else:
+                report_path = email_reporter.save_error_report(
+                    email=email,
+                    error_type=error_type,
+                    error_message=error_message,
+                    screenshot_path=error_screenshot,
+                    additional_data={
+                        "browser_url": self.page.url if self.page else "unknown",
+                        "automation_step": "google_cloud_login",
+                        "detection_method": "enhanced_challenge_detection"
+                    }
+                )
+            
+            if report_path:
+                self.logger.info(f"📄 Error report saved: {report_path}")
+            else:
+                self.logger.warning("⚠️ Failed to save error report")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to save error report: {str(e)}")
     
     async def _close_browser_for_verification(self):
         """Close browser specifically for email verification case"""

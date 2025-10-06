@@ -29,6 +29,7 @@ except ImportError:
 from oauth_credentials import OAuthCredentialsManager
 from config import get_config, ConfigManager
 from error_handler import error_handler, ErrorType, log_error
+from email_reporter import email_reporter
 
 class GmailOAuthGUI:
     """Enhanced GUI for Playwright-based Gmail OAuth automation"""
@@ -694,9 +695,11 @@ class GmailOAuthGUI:
     def open_reports_folder(self):
         """Open reports folder"""
         try:
-            reports_dir = Path(self.config.paths.reports_dir)
+            # Use the email reporter's base directory
+            reports_dir = email_reporter.base_reports_dir
             reports_dir.mkdir(parents=True, exist_ok=True)
             os.startfile(str(reports_dir))
+            self.log_message(f"📁 Opened reports folder: {reports_dir}", "INFO")
         except Exception as e:
             self.log_message(f"Error opening reports folder: {str(e)}", "ERROR")
     

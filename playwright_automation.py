@@ -347,13 +347,14 @@ class PlaywrightAutomationEngine:
         raise last_error
     
     async def check_for_challenges(self) -> Dict[str, bool]:
-        """Check for various challenges (CAPTCHA, 2FA, etc.)"""
+        """Enhanced challenge detection with improved CAPTCHA and reCAPTCHA detection"""
         challenges = {
             'captcha': False,
             'two_factor': False,
             'email_verification': False,
             'account_blocked': False,
-            'unusual_activity': False
+            'unusual_activity': False,
+            'recaptcha': False
         }
         
         try:
@@ -361,68 +362,353 @@ class PlaywrightAutomationEngine:
             page_text = page_content.lower()
             current_url = await self.get_current_url()
             
-            # PRIORITY 1: Check for 2FA FIRST (before CAPTCHA to avoid false positives)
-            two_factor_indicators = [
-                '2-step verification', 'two-step verification',
-                'check your phone', 'verify it\'s you',
-                'enter the code', 'verification code',
-                'authenticator app', 'phone number',
-                'google sent a notification'
-            ]
+            # PRIORITY 1: Enhanced CAPTCHA/reCAPTCHA Detection (check first as it's most common)
+            await self._detect_captcha_challenges(challenges, page_text, current_url)
             
-            # Also check URL pattern for two-factor verification
-            two_factor_url_patterns = [
-                'accounts.google.com/v3/signin/challenge',
-                'accounts.google.com/signin/challenge',
-                'challenge'
-            ]
+            # If CAPTCHA is detected, return immediately to handle it
+            if challenges['captcha'] or challenges['recaptcha']:
+                return challenges
             
-            # Check text indicators
-            text_match = any(indicator in page_text for indicator in two_factor_indicators)
-            # Check URL patterns
-            url_match = any(pattern in current_url for pattern in two_factor_url_patterns)
+            # PRIORITY 2: Check for 2FA (after CAPTCHA to avoid conflicts)
+            await self._detect_two_factor_challenges(challenges, page_text, current_url)
             
-            challenges['two_factor'] = text_match or url_match
-            
-            # If two-factor is detected, return immediately to avoid false CAPTCHA detection
+            # If two-factor is detected, return immediately to avoid false positives
             if challenges['two_factor']:
                 return challenges
             
-            # PRIORITY 2: Check for CAPTCHA (only if not two-factor)
-            captcha_indicators = [
-                'captcha', 'recaptcha', 'i\'m not a robot',
-                'verify you\'re human'
-                # Removed 'security check' as it's too broad and causes false positives
-            ]
-            challenges['captcha'] = any(indicator in page_text for indicator in captcha_indicators)
-            
             # PRIORITY 3: Check for email verification
-            email_indicators = [
-                'verify your email', 'check your email',
-                'confirmation email', 'email verification'
-            ]
-            challenges['email_verification'] = any(indicator in page_text for indicator in email_indicators)
+            await self._detect_email_verification_challenges(challenges, page_text)
             
             # PRIORITY 4: Check for blocked account
-            blocked_indicators = [
-                'account suspended', 'account disabled',
-                'account locked', 'access denied',
-                'temporarily blocked'
-            ]
-            challenges['account_blocked'] = any(indicator in page_text for indicator in blocked_indicators)
+            await self._detect_account_blocked_challenges(challenges, page_text)
             
-            # PRIORITY 5: Check for unusual activity (but not if it's two-factor)
-            activity_indicators = [
-                'unusual activity', 'suspicious activity',
-                'security alert'
-                # Removed 'verify it\'s you' as it's handled in two-factor detection
-            ]
-            challenges['unusual_activity'] = any(indicator in page_text for indicator in activity_indicators)
+            # PRIORITY 5: Check for unusual activity
+            await self._detect_unusual_activity_challenges(challenges, page_text)
             
         except Exception as e:
             log_error(e, "check_for_challenges")
         
         return challenges
+    
+    async def _detect_captcha_challenges(self, challenges: Dict[str, bool], page_text: str, current_url: str):
+        """Enhanced CAPTCHA and reCAPTCHA detection with strict validation"""
+        try:
+            # Normal password page URLs that should NOT be considered CAPTCHA
+            normal_password_urls = [
+                'accounts.google.com/v3/signin/identifier',
+                'accounts.google.com/signin/identifier',
+                'accounts.google.com/v3/signin/password',
+                'accounts.google.com/signin/password',
+                'accounts.google.com/signin/v2/identifier',
+                'accounts.google.com/signin/v2/password',
+                'accounts.google.com/v3/signin/challenge/pwd',  # Normal password challenge page
+                'accounts.google.com/signin/challenge/pwd'      # Normal password challenge page
+            ]
+            
+            # Check if this is a normal password page
+            is_normal_password_page = any(url_pattern in current_url for url_pattern in normal_password_urls)
+            
+            # Text-based CAPTCHA indicators (more specific)
+            captcha_text_indicators = [
+                'i\'m not a robot', 'im not a robot',
+                'verify you\'re human', 'verify youre human',
+                'confirm you\'re not a robot', 'confirm youre not a robot',
+                'prove you\'re human', 'prove youre human'
+            ]
+            
+            # Strong CAPTCHA text indicators (these alone can trigger detection)
+            strong_captcha_indicators = [
+                'recaptcha', 'captcha'
+            ]
+            
+            # URL-based CAPTCHA indicators (specific challenge URLs only)
+            captcha_url_patterns = [
+                'accounts.google.com/v3/signin/challenge/recaptcha',
+                'accounts.google.com/signin/challenge/recaptcha',
+                'accounts.google.com/v3/signin/challenge/captcha',
+                'accounts.google.com/signin/challenge/captcha'
+            ]
+            
+            # Check different types of indicators
+            text_captcha_detected = any(indicator in page_text.lower() for indicator in captcha_text_indicators)
+            strong_text_detected = any(indicator in page_text.lower() for indicator in strong_captcha_indicators)
+            url_captcha_detected = any(pattern in current_url for pattern in captcha_url_patterns)
+            
+            # Element-based detection for reCAPTCHA
+            element_captcha_detected = await self._detect_captcha_elements()
+            
+            # Detailed logging for debugging
+            self.logger.info(f"🔍 CAPTCHA Detection Analysis:")
+            self.logger.info(f"   Current URL: {current_url}")
+            self.logger.info(f"   Is normal password page: {is_normal_password_page}")
+            self.logger.info(f"   Text indicators found: {text_captcha_detected}")
+            self.logger.info(f"   Strong text indicators found: {strong_text_detected}")
+            self.logger.info(f"   URL patterns found: {url_captcha_detected}")
+            self.logger.info(f"   Element detection: {element_captcha_detected}")
+            
+            # STRICT DETECTION LOGIC:
+            # 1. If it's a normal password page, don't detect CAPTCHA unless very strong evidence
+            # 2. Require multiple indicators OR strong single indicator
+            if is_normal_password_page:
+                # For normal password pages, require very strong evidence
+                captcha_detected = (element_captcha_detected and (strong_text_detected or url_captcha_detected))
+                self.logger.info(f"   Normal password page - strict check: {captcha_detected}")
+            else:
+                # For other pages, require at least 2 indicators OR 1 strong indicator
+                indicator_count = sum([text_captcha_detected, url_captcha_detected, element_captcha_detected])
+                captcha_detected = (indicator_count >= 2) or strong_text_detected or url_captcha_detected
+                self.logger.info(f"   Other page - indicator count: {indicator_count}, detected: {captcha_detected}")
+            
+            # Set challenge flags
+            challenges['captcha'] = captcha_detected
+            challenges['recaptcha'] = captcha_detected and (element_captcha_detected or 'recaptcha' in page_text.lower())
+            
+            if challenges['captcha'] or challenges['recaptcha']:
+                self.logger.warning(f"🤖 CAPTCHA/reCAPTCHA CONFIRMED - Text: {text_captcha_detected}, Strong: {strong_text_detected}, URL: {url_captcha_detected}, Element: {element_captcha_detected}")
+            else:
+                self.logger.info(f"✅ No CAPTCHA detected - continuing with normal flow")
+                
+        except Exception as e:
+            log_error(e, "_detect_captcha_challenges")
+    
+    async def _detect_captcha_elements(self) -> bool:
+        """Detect CAPTCHA elements on the page with enhanced selectors"""
+        try:
+            # Enhanced reCAPTCHA element selectors
+            recaptcha_selectors = [
+                'iframe[src*="recaptcha"]',
+                'iframe[title*="recaptcha"]',
+                'iframe[title*="reCAPTCHA"]',
+                'iframe[name*="recaptcha"]',
+                '.g-recaptcha',
+                '#g-recaptcha',
+                '[data-sitekey]',
+                'div[class*="recaptcha"]',
+                'div[id*="recaptcha"]',
+                'div[data-recaptcha]',
+                'script[src*="recaptcha"]',
+                'div.recaptcha-checkbox-border',
+                'div.recaptcha-checkbox-checkmark',
+                'div[role="presentation"][style*="recaptcha"]'
+            ]
+            
+            # Enhanced "I'm not a robot" checkbox selectors
+            robot_checkbox_selectors = [
+                'input[type="checkbox"][aria-label*="not a robot"]',
+                'input[type="checkbox"][aria-label*="not robot"]',
+                'input[type="checkbox"][title*="not a robot"]',
+                'input[type="checkbox"][title*="not robot"]',
+                'span:has-text("I\'m not a robot")',
+                'span:has-text("Im not a robot")',
+                'span:has-text("I am not a robot")',
+                'label:has-text("I\'m not a robot")',
+                'label:has-text("Im not a robot")',
+                'label:has-text("I am not a robot")',
+                'div:has-text("I\'m not a robot")',
+                'div:has-text("Im not a robot")',
+                '.recaptcha-checkbox',
+                '#recaptcha-checkbox',
+                '.recaptcha-checkbox-border',
+                '.recaptcha-checkbox-checkmark',
+                'div[role="checkbox"][aria-label*="not a robot"]',
+                'div[role="checkbox"][aria-label*="not robot"]'
+            ]
+            
+            # Enhanced CAPTCHA image selectors
+            captcha_image_selectors = [
+                'img[src*="captcha"]',
+                'img[alt*="captcha"]',
+                'img[alt*="CAPTCHA"]',
+                'img[title*="captcha"]',
+                'img[title*="CAPTCHA"]',
+                'canvas[id*="captcha"]',
+                'canvas[class*="captcha"]',
+                'div[class*="captcha-image"]',
+                'div[id*="captcha-image"]',
+                'div[class*="captcha-container"]',
+                'div[id*="captcha-container"]',
+                'img[src*="challenge"]',
+                'img[alt*="challenge"]',
+                'div[class*="challenge-image"]'
+            ]
+            
+            # Google-specific verification selectors (ONLY for actual CAPTCHA challenges)
+            google_verification_selectors = [
+                # REMOVED: 'div[data-identifier="TL"]' - Too broad, can appear on normal pages
+                # REMOVED: 'div[jsname="B34EJ"]' - Too broad, can appear on normal pages
+                # REMOVED: 'div[jsname="Njthtb"]' - This is a normal password form element, not CAPTCHA
+                'div[data-challenge-ui="challenge"]',
+                'div[aria-label*="captcha"]',           # More specific to CAPTCHA
+                'div[aria-label*="recaptcha"]',         # More specific to reCAPTCHA
+                'form[data-challenge-ui]',
+                'div[class*="captcha-challenge"]',      # More specific to CAPTCHA challenges
+                'div[id*="captcha-challenge"]'          # More specific to CAPTCHA challenges
+            ]
+            
+            # Cloudflare and other CAPTCHA providers
+            other_captcha_selectors = [
+                'div[class*="cf-challenge"]',     # Cloudflare
+                'div[id*="cf-challenge"]',        # Cloudflare
+                'div[class*="hcaptcha"]',         # hCaptcha
+                'div[id*="hcaptcha"]',            # hCaptcha
+                'iframe[src*="hcaptcha"]',        # hCaptcha iframe
+                'div[class*="turnstile"]',        # Cloudflare Turnstile
+                'div[id*="turnstile"]',           # Cloudflare Turnstile
+                'div[class*="captcha-widget"]',   # Generic CAPTCHA widget
+                'div[id*="captcha-widget"]'       # Generic CAPTCHA widget
+            ]
+            
+            # Check for any reCAPTCHA elements (must be visible)
+            for selector in recaptcha_selectors:
+                locator = self.page.locator(selector)
+                if await locator.count() > 0:
+                    # Check if element is actually visible
+                    try:
+                        if await locator.first.is_visible(timeout=1000):
+                            self.logger.info(f"🔍 reCAPTCHA element detected (visible): {selector}")
+                            return True
+                        else:
+                            self.logger.debug(f"🔍 reCAPTCHA element found but not visible: {selector}")
+                    except:
+                        self.logger.debug(f"🔍 reCAPTCHA element visibility check failed: {selector}")
+            
+            # Check for robot checkbox elements (must be visible)
+            for selector in robot_checkbox_selectors:
+                locator = self.page.locator(selector)
+                if await locator.count() > 0:
+                    try:
+                        if await locator.first.is_visible(timeout=1000):
+                            self.logger.info(f"🔍 'I'm not a robot' checkbox detected (visible): {selector}")
+                            return True
+                        else:
+                            self.logger.debug(f"🔍 Robot checkbox found but not visible: {selector}")
+                    except:
+                        self.logger.debug(f"🔍 Robot checkbox visibility check failed: {selector}")
+            
+            # Check for CAPTCHA image elements (must be visible)
+            for selector in captcha_image_selectors:
+                locator = self.page.locator(selector)
+                if await locator.count() > 0:
+                    try:
+                        if await locator.first.is_visible(timeout=1000):
+                            self.logger.info(f"🔍 CAPTCHA image detected (visible): {selector}")
+                            return True
+                        else:
+                            self.logger.debug(f"🔍 CAPTCHA image found but not visible: {selector}")
+                    except:
+                        self.logger.debug(f"🔍 CAPTCHA image visibility check failed: {selector}")
+            
+            # Check for Google-specific verification elements (must be visible)
+            for selector in google_verification_selectors:
+                locator = self.page.locator(selector)
+                if await locator.count() > 0:
+                    try:
+                        if await locator.first.is_visible(timeout=1000):
+                            self.logger.info(f"🔍 Google verification challenge detected (visible): {selector}")
+                            return True
+                        else:
+                            self.logger.debug(f"🔍 Google verification found but not visible: {selector}")
+                    except:
+                        self.logger.debug(f"🔍 Google verification visibility check failed: {selector}")
+            
+            # Check for other CAPTCHA providers (must be visible)
+            for selector in other_captcha_selectors:
+                locator = self.page.locator(selector)
+                if await locator.count() > 0:
+                    try:
+                        if await locator.first.is_visible(timeout=1000):
+                            self.logger.info(f"🔍 Third-party CAPTCHA detected (visible): {selector}")
+                            return True
+                        else:
+                            self.logger.debug(f"🔍 Third-party CAPTCHA found but not visible: {selector}")
+                    except:
+                        self.logger.debug(f"🔍 Third-party CAPTCHA visibility check failed: {selector}")
+            
+            self.logger.debug(f"🔍 No visible CAPTCHA elements found")
+            return False
+            
+        except Exception as e:
+            log_error(e, "_detect_captcha_elements")
+            return False
+    
+    async def _detect_two_factor_challenges(self, challenges: Dict[str, bool], page_text: str, current_url: str):
+        """Detect two-factor authentication challenges"""
+        try:
+            two_factor_indicators = [
+                '2-step verification', 'two-step verification',
+                'check your phone', 'enter the code', 'verification code',
+                'authenticator app', 'phone number',
+                'google sent a notification', 'sent a notification',
+                'verify with your phone', 'verify using your phone'
+            ]
+            
+            two_factor_url_patterns = [
+                'accounts.google.com/v3/signin/challenge/totp',
+                'accounts.google.com/signin/challenge/totp',
+                'accounts.google.com/v3/signin/challenge/ipp',
+                'accounts.google.com/signin/challenge/ipp'
+            ]
+            
+            text_match = any(indicator in page_text for indicator in two_factor_indicators)
+            url_match = any(pattern in current_url for pattern in two_factor_url_patterns)
+            
+            challenges['two_factor'] = text_match or url_match
+            
+            if challenges['two_factor']:
+                self.logger.warning(f"📱 Two-factor authentication detected - Text: {text_match}, URL: {url_match}")
+                
+        except Exception as e:
+            log_error(e, "_detect_two_factor_challenges")
+    
+    async def _detect_email_verification_challenges(self, challenges: Dict[str, bool], page_text: str):
+        """Detect email verification challenges"""
+        try:
+            email_indicators = [
+                'verify your email', 'check your email',
+                'confirmation email', 'email verification',
+                'sent you an email', 'check your inbox'
+            ]
+            
+            challenges['email_verification'] = any(indicator in page_text for indicator in email_indicators)
+            
+            if challenges['email_verification']:
+                self.logger.warning("📧 Email verification detected")
+                
+        except Exception as e:
+            log_error(e, "_detect_email_verification_challenges")
+    
+    async def _detect_account_blocked_challenges(self, challenges: Dict[str, bool], page_text: str):
+        """Detect account blocked challenges"""
+        try:
+            blocked_indicators = [
+                'account suspended', 'account disabled',
+                'account locked', 'access denied',
+                'temporarily blocked', 'account restricted'
+            ]
+            
+            challenges['account_blocked'] = any(indicator in page_text for indicator in blocked_indicators)
+            
+            if challenges['account_blocked']:
+                self.logger.error("🚫 Account blocked/suspended detected")
+                
+        except Exception as e:
+            log_error(e, "_detect_account_blocked_challenges")
+    
+    async def _detect_unusual_activity_challenges(self, challenges: Dict[str, bool], page_text: str):
+        """Detect unusual activity challenges"""
+        try:
+            activity_indicators = [
+                'unusual activity', 'suspicious activity',
+                'security alert', 'unusual sign-in activity'
+            ]
+            
+            challenges['unusual_activity'] = any(indicator in page_text for indicator in activity_indicators)
+            
+            if challenges['unusual_activity']:
+                self.logger.warning("⚠️ Unusual activity detected")
+                
+        except Exception as e:
+            log_error(e, "_detect_unusual_activity_challenges")
     
     async def handle_download(self, download_trigger_func, expected_filename: str = None) -> Optional[str]:
         """Handle file download with proper waiting"""
