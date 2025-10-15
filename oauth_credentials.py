@@ -358,37 +358,27 @@ class OAuthCredentialsManager(GoogleCloudAutomation):
                 result['errors'].append(f"OAuth consent setup failed: {str(e)}")
                 raise
             
-            # Step 5: Create OAuth Credentials
+            # Step 5: Create OAuth Credentials and Download JSON
             try:
-                cred_result = await self.create_oauth_credentials()
+                await self.create_oauth_credentials(email)
                 result['steps_completed'].append("oauth_credentials")
-                self.logger.info("✅ Step 5: OAuth credentials created")
+                self.logger.info("✅ Step 5: OAuth credentials created and JSON downloaded")
             except Exception as e:
                 result['errors'].append(f"OAuth credentials creation failed: {str(e)}")
                 raise
             
-            # Step 6: Download JSON File
+            # Step 6: Rename JSON File
             try:
-                download_result = await self.download_json_file()
-                result['steps_completed'].append("json_download")
-                result['files_created'].append(download_result['file_path'])
-                self.logger.info("✅ Step 6: JSON file downloaded")
+                rename_success = await self.rename_downloaded_json(email)
+                if rename_success:
+                    result['steps_completed'].append("json_rename")
+                    result['files_created'].append(f"{email.replace('@', '_').replace('.', '_')}.json")
+                    self.logger.info("✅ Step 6: JSON file renamed")
+                else:
+                    self.logger.warning("⚠️ JSON file rename failed, but continuing...")
             except Exception as e:
-                result['errors'].append(f"JSON download failed: {str(e)}")
-                raise
-            
-            # Step 7: Organize JSON File
-            try:
-                organize_result = await self.organize_json_file(
-                    download_result['file_path'], 
-                    email
-                )
-                result['steps_completed'].append("json_organization")
-                result['files_created'].append(organize_result['new_path'])
-                self.logger.info("✅ Step 7: JSON file organized")
-            except Exception as e:
-                result['errors'].append(f"JSON organization failed: {str(e)}")
-                raise
+                self.logger.warning(f"⚠️ JSON rename failed: {str(e)}, but continuing...")
+                result['errors'].append(f"JSON rename failed: {str(e)}")
             
             # Mark as successful
             result['success'] = True
@@ -457,14 +447,35 @@ class OAuthCredentialsManager(GoogleCloudAutomation):
                 pass
     
     def _generate_project_name(self, email: str) -> str:
-        """Generate a unique project name based on email"""
+        """Generate a unique project name based on email (4-30 characters)"""
         # Extract username from email
         username = email.split('@')[0]
         # Clean username for project name
-        clean_username = re.sub(r'[^a-zA-Z0-9]', '', username)[:10]
-        # Add timestamp for uniqueness
-        timestamp = int(time.time())
-        return f"gmail-oauth-{clean_username}-{timestamp}"
+        clean_username = re.sub(r'[^a-zA-Z0-9]', '', username)
+        
+        # Generate a shorter timestamp (last 6 digits)
+        timestamp = str(int(time.time()))[-6:]
+        
+        # Calculate available space for username
+        # Format: "gmail-oauth-{username}-{timestamp}"
+        # "gmail-oauth-" = 12 chars, "-" = 1 char, timestamp = 6 chars
+        # Total fixed chars = 19, so username can be max 11 chars (30 - 19 = 11)
+        max_username_length = 11
+        clean_username = clean_username[:max_username_length]
+        
+        # Create project name
+        project_name = f"gmail-oauth-{clean_username}-{timestamp}"
+        
+        # Final safety check - if still too long, use shorter format
+        if len(project_name) > 30:
+            # Fallback to just "gmail-oauth-{timestamp}" (18 chars)
+            project_name = f"gmail-oauth-{timestamp}"
+        
+        # Ensure minimum length (4 chars)
+        if len(project_name) < 4:
+            project_name = f"gmail-{timestamp}"
+        
+        return project_name.lower()
     
     async def generate_report(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Generate a comprehensive report of OAuth setup results"""

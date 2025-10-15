@@ -354,7 +354,8 @@ class PlaywrightAutomationEngine:
             'email_verification': False,
             'account_blocked': False,
             'unusual_activity': False,
-            'recaptcha': False
+            'recaptcha': False,
+            'speedbump_verification': False
         }
         
         try:
@@ -384,6 +385,9 @@ class PlaywrightAutomationEngine:
             
             # PRIORITY 5: Check for unusual activity
             await self._detect_unusual_activity_challenges(challenges, page_text)
+            
+            # PRIORITY 6: Check for speedbump verification (Google's "আমি বুঝি" popup)
+            await self._detect_speedbump_verification(challenges, page_text, current_url)
             
         except Exception as e:
             log_error(e, "check_for_challenges")
@@ -697,6 +701,27 @@ class PlaywrightAutomationEngine:
     async def _detect_unusual_activity_challenges(self, challenges: Dict[str, bool], page_text: str):
         """Detect unusual activity challenges"""
         try:
+            # Get current URL to check for successful login redirects
+            current_url = await self.get_current_url()
+            
+            # URLs that indicate successful login (NOT unusual activity)
+            successful_login_urls = [
+                'myaccount.google.com',
+                'console.cloud.google.com',
+                'accounts.google.com/ManageAccount',
+                'accounts.google.com/b/0/ManageAccount'
+            ]
+            
+            # Check if we're on a successful login page
+            is_successful_login = any(url_pattern in current_url for url_pattern in successful_login_urls)
+            
+            if is_successful_login:
+                # This is a successful login redirect, not unusual activity
+                challenges['unusual_activity'] = False
+                self.logger.info(f"✅ Successful login detected - URL: {current_url}")
+                return
+            
+            # Only check for unusual activity text if we're not on a successful login page
             activity_indicators = [
                 'unusual activity', 'suspicious activity',
                 'security alert', 'unusual sign-in activity'
@@ -709,6 +734,117 @@ class PlaywrightAutomationEngine:
                 
         except Exception as e:
             log_error(e, "_detect_unusual_activity_challenges")
+    
+    async def _detect_speedbump_verification(self, challenges: Dict[str, bool], page_text: str, current_url: str):
+        """Detect Google speedbump verification popup (গুরুত্বপূর্ণ তথ্য popup with আমি বুঝি button)"""
+        try:
+            # Check for speedbump URL patterns
+            speedbump_url_patterns = [
+                'accounts.google.com/speedbump',
+                'accounts.google.com/v3/signin/speedbump',
+                'accounts.google.com/signin/speedbump',
+                'gaplustos'  # Common in speedbump URLs
+            ]
+            
+            # Check for Bengali text indicators
+            bengali_indicators = [
+                'আমি বুঝি',  # "I understand" in Bengali
+                'গুরুত্বপূর্ণ তথ্য',  # "Important information" in Bengali
+                'আপনার অ্যাকাউন্ট',  # "Your account" in Bengali
+                'নিরাপত্তা',  # "Security" in Bengali
+                'যাচাইকরণ'  # "Verification" in Bengali
+            ]
+            
+            # Check for English text indicators (fallback)
+            english_indicators = [
+                'important information',
+                'account security',
+                'verification required',
+                'continue to your account',
+                'i understand',
+                'understand and continue'
+            ]
+            
+            # URL-based detection
+            url_match = any(pattern in current_url for pattern in speedbump_url_patterns)
+            
+            # Text-based detection (Bengali first, then English)
+            bengali_text_match = any(indicator in page_text for indicator in bengali_indicators)
+            english_text_match = any(indicator in page_text for indicator in english_indicators)
+            
+            # Combined detection
+            challenges['speedbump_verification'] = url_match or bengali_text_match or english_text_match
+            
+            if challenges['speedbump_verification']:
+                self.logger.warning(f"🚨 Speedbump verification detected - URL: {url_match}, Bengali: {bengali_text_match}, English: {english_text_match}")
+                self.logger.info(f"   Current URL: {current_url}")
+                
+        except Exception as e:
+            log_error(e, "_detect_speedbump_verification")
+    
+    async def handle_speedbump_verification(self) -> bool:
+        """Handle speedbump verification by clicking 'আমি বুঝি' (I understand) button"""
+        try:
+            self.logger.info("🔄 Attempting to handle speedbump verification...")
+            
+            # Button selectors for "আমি বুঝি" / "I understand" button
+            understand_button_selectors = [
+                # Bengali text selectors
+                'button:has-text("আমি বুঝি")',
+                'input[value="আমি বুঝি"]',
+                'a:has-text("আমি বুঝি")',
+                
+                # English text selectors (fallback)
+                'button:has-text("I understand")',
+                'button:has-text("Understand")',
+                'button:has-text("Continue")',
+                'input[value="I understand"]',
+                'input[value="Continue"]',
+                
+                # Generic selectors based on common patterns
+                'button[type="submit"]',
+                'input[type="submit"]',
+                'button[data-action="continue"]',
+                'button[data-action="understand"]',
+                
+                # Google-specific selectors
+                'div[role="button"]:has-text("আমি বুঝি")',
+                'div[role="button"]:has-text("I understand")',
+                'span:has-text("আমি বুঝি")',
+                'span:has-text("I understand")'
+            ]
+            
+            # Try to click the understand button
+            for selector in understand_button_selectors:
+                try:
+                    locator = self.page.locator(selector)
+                    if await locator.count() > 0:
+                        # Check if button is visible
+                        if await locator.first.is_visible(timeout=2000):
+                            self.logger.info(f"✅ Found understand button: {selector}")
+                            await locator.first.click()
+                            await self.human_delay(1, 2)
+                            
+                            # Wait for navigation or page change
+                            try:
+                                await self.page.wait_for_load_state("networkidle", timeout=10000)
+                            except:
+                                pass
+                            
+                            self.logger.info("✅ Successfully clicked understand button")
+                            return True
+                        else:
+                            self.logger.debug(f"Button found but not visible: {selector}")
+                except Exception as e:
+                    self.logger.debug(f"Selector {selector} failed: {str(e)}")
+                    continue
+            
+            self.logger.warning("⚠️ Could not find or click understand button")
+            return False
+            
+        except Exception as e:
+            log_error(e, "handle_speedbump_verification")
+            return False
     
     async def handle_download(self, download_trigger_func, expected_filename: str = None) -> Optional[str]:
         """Handle file download with proper waiting"""
@@ -754,22 +890,34 @@ class PlaywrightAutomationEngine:
             log_error(e, "cleanup")
     
     def generate_project_name(self, email: str) -> str:
-        """Generate a unique project name"""
+        """Generate a unique project name (4-30 characters)"""
         # Extract username from email
         username = email.split('@')[0]
         
         # Clean username (remove special characters)
         clean_username = ''.join(c for c in username if c.isalnum())
         
-        # Generate random suffix
+        # Generate random suffix (6 characters)
         suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+        
+        # Calculate available space for username
+        # Format: "gmail-oauth-{username}-{suffix}"
+        # "gmail-oauth-" = 12 chars, "-" = 1 char, suffix = 6 chars
+        # Total fixed chars = 19, so username can be max 11 chars (30 - 19 = 11)
+        max_username_length = 11
+        clean_username = clean_username[:max_username_length]
         
         # Create project name
         project_name = f"gmail-oauth-{clean_username}-{suffix}"
         
-        # Ensure it meets Google Cloud naming requirements
+        # Final safety check - if still too long, use shorter format
         if len(project_name) > 30:
+            # Fallback to just "gmail-oauth-{suffix}" (18 chars)
             project_name = f"gmail-oauth-{suffix}"
+        
+        # Ensure minimum length (4 chars)
+        if len(project_name) < 4:
+            project_name = f"gmail-{suffix}"
         
         return project_name.lower()
     

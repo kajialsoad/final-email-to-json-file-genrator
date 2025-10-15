@@ -80,6 +80,13 @@ class GmailOAuthGUI:
         self.retry_attempts = IntVar(value=self.config.automation.max_retries)
         self.concurrent_limit = IntVar(value=self.config.automation.concurrent_limit)
         
+        # Approver email settings
+        self.approver_enabled = BooleanVar(value=self.config.approver.enabled)
+        self.approver_email = StringVar(value=self.config.approver.approver_email)
+        self.approver_password = StringVar(value=self.config.approver.approver_password)
+        self.auto_handle_verification = BooleanVar(value=self.config.approver.auto_handle_verification)
+        self.handle_speedbump_popup = BooleanVar(value=self.config.approver.handle_speedbump_popup)
+        
         # Progress
         self.progress_var = DoubleVar()
         self.status_text = StringVar(value="Ready")
@@ -232,26 +239,71 @@ class GmailOAuthGUI:
         settings_frame = ttk.Frame(self.notebook, padding="10")
         self.notebook.add(settings_frame, text="Settings")
         
-        # Browser settings
-        ttk.Label(settings_frame, text="Browser Settings:", style='Header.TLabel').grid(row=0, column=0, sticky=W, pady=(0, 10))
+        # Create scrollable frame
+        canvas = Canvas(settings_frame)
+        scrollbar = ttk.Scrollbar(settings_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
         
-        ttk.Checkbutton(settings_frame, text="Headless Mode", variable=self.headless_mode).grid(row=1, column=0, sticky=W, pady=2)
-        ttk.Checkbutton(settings_frame, text="Stealth Mode", variable=self.stealth_mode).grid(row=2, column=0, sticky=W, pady=2)
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.grid(row=0, column=0, sticky=(W, E, N, S))
+        scrollbar.grid(row=0, column=1, sticky=(N, S))
+        
+        settings_frame.columnconfigure(0, weight=1)
+        settings_frame.rowconfigure(0, weight=1)
+        
+        # Browser settings
+        ttk.Label(scrollable_frame, text="Browser Settings:", style='Header.TLabel').grid(row=0, column=0, sticky=W, pady=(0, 10))
+        
+        ttk.Checkbutton(scrollable_frame, text="Headless Mode", variable=self.headless_mode).grid(row=1, column=0, sticky=W, pady=2)
+        ttk.Checkbutton(scrollable_frame, text="Stealth Mode", variable=self.stealth_mode).grid(row=2, column=0, sticky=W, pady=2)
         
         # Automation settings
-        ttk.Label(settings_frame, text="Automation Settings:", style='Header.TLabel').grid(row=3, column=0, sticky=W, pady=(20, 10))
+        ttk.Label(scrollable_frame, text="Automation Settings:", style='Header.TLabel').grid(row=3, column=0, sticky=W, pady=(20, 10))
         
-        ttk.Label(settings_frame, text="Retry Attempts:").grid(row=4, column=0, sticky=W, pady=2)
-        retry_spin = ttk.Spinbox(settings_frame, from_=1, to=10, textvariable=self.retry_attempts, width=10)
+        ttk.Label(scrollable_frame, text="Retry Attempts:").grid(row=4, column=0, sticky=W, pady=2)
+        retry_spin = ttk.Spinbox(scrollable_frame, from_=1, to=10, textvariable=self.retry_attempts, width=10)
         retry_spin.grid(row=4, column=1, sticky=W, padx=(10, 0), pady=2)
         
-        ttk.Label(settings_frame, text="Concurrent Limit:").grid(row=5, column=0, sticky=W, pady=2)
-        concurrent_spin = ttk.Spinbox(settings_frame, from_=1, to=5, textvariable=self.concurrent_limit, width=10)
+        ttk.Label(scrollable_frame, text="Concurrent Limit:").grid(row=5, column=0, sticky=W, pady=2)
+        concurrent_spin = ttk.Spinbox(scrollable_frame, from_=1, to=5, textvariable=self.concurrent_limit, width=10)
         concurrent_spin.grid(row=5, column=1, sticky=W, padx=(10, 0), pady=2)
         
+        # Approver Email Settings
+        ttk.Label(scrollable_frame, text="Approver Email Settings:", style='Header.TLabel').grid(row=6, column=0, sticky=W, pady=(20, 10))
+        
+        # Enable approver functionality
+        ttk.Checkbutton(scrollable_frame, text="Enable Approver Email Functionality", variable=self.approver_enabled).grid(row=7, column=0, columnspan=2, sticky=W, pady=2)
+        
+        # Approver email
+        ttk.Label(scrollable_frame, text="Approver Email:").grid(row=8, column=0, sticky=W, pady=2)
+        approver_email_entry = ttk.Entry(scrollable_frame, textvariable=self.approver_email, width=30)
+        approver_email_entry.grid(row=8, column=1, sticky=W, padx=(10, 0), pady=2)
+        
+        # Approver password
+        ttk.Label(scrollable_frame, text="Approver Password:").grid(row=9, column=0, sticky=W, pady=2)
+        approver_password_entry = ttk.Entry(scrollable_frame, textvariable=self.approver_password, show="*", width=30)
+        approver_password_entry.grid(row=9, column=1, sticky=W, padx=(10, 0), pady=2)
+        
+        # Auto handle verification
+        ttk.Checkbutton(scrollable_frame, text="Auto Handle Verification Emails", variable=self.auto_handle_verification).grid(row=10, column=0, columnspan=2, sticky=W, pady=2)
+        
+        # Handle speedbump popup
+        ttk.Checkbutton(scrollable_frame, text="Auto Click 'আমি বুঝি' Button", variable=self.handle_speedbump_popup).grid(row=11, column=0, columnspan=2, sticky=W, pady=2)
+        
+        # Info text
+        info_text = "Approver email will be used to check for verification emails\nwhen Gmail accounts require additional verification."
+        ttk.Label(scrollable_frame, text=info_text, foreground='gray', font=('Arial', 9)).grid(row=12, column=0, columnspan=2, sticky=W, pady=(5, 10))
+        
         # Save settings button
-        save_btn = ttk.Button(settings_frame, text="Save Settings", command=self.save_settings)
-        save_btn.grid(row=6, column=0, columnspan=2, pady=20)
+        save_btn = ttk.Button(scrollable_frame, text="Save Settings", command=self.save_settings)
+        save_btn.grid(row=13, column=0, columnspan=2, pady=20)
     
     def setup_progress_section(self, parent):
         """Setup progress tracking section"""
@@ -660,9 +712,16 @@ class GmailOAuthGUI:
     def _update_config_from_gui(self):
         """Update configuration from GUI settings"""
         self.config.browser.headless = self.headless_mode.get()
-        self.config.automation.stealth_mode = self.stealth_mode.get()
+        self.config.browser.stealth_mode = self.stealth_mode.get()
         self.config.automation.max_retries = self.retry_attempts.get()
         self.config.automation.concurrent_limit = self.concurrent_limit.get()
+        
+        # Update approver settings
+        self.config.approver.enabled = self.approver_enabled.get()
+        self.config.approver.approver_email = self.approver_email.get()
+        self.config.approver.approver_password = self.approver_password.get()
+        self.config.approver.auto_handle_verification = self.auto_handle_verification.get()
+        self.config.approver.handle_speedbump_popup = self.handle_speedbump_popup.get()
     
     def stop_processing(self):
         """Stop current processing"""
@@ -675,7 +734,15 @@ class GmailOAuthGUI:
         try:
             self._update_config_from_gui()
             config_manager = ConfigManager()
-            config_manager.save_config(self.config)
+            
+            # Update the config manager's approver settings
+            config_manager.approver.enabled = self.config.approver.enabled
+            config_manager.approver.approver_email = self.config.approver.approver_email
+            config_manager.approver.approver_password = self.config.approver.approver_password
+            config_manager.approver.auto_handle_verification = self.config.approver.auto_handle_verification
+            config_manager.approver.handle_speedbump_popup = self.config.approver.handle_speedbump_popup
+            
+            config_manager.save_config()
             self.log_message("✅ Settings saved", "SUCCESS")
             messagebox.showinfo("Success", "Settings saved successfully")
         except Exception as e:

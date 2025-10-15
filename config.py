@@ -71,6 +71,18 @@ class SecurityConfig:
     disable_javascript: bool = False
     block_ads: bool = True
 
+@dataclass
+class ApproverConfig:
+    """Approver email configuration for verification handling"""
+    enabled: bool = False
+    approver_email: str = ""
+    approver_password: str = ""
+    auto_handle_verification: bool = True
+    verification_timeout: int = 300  # 5 minutes
+    check_interval: int = 30  # 30 seconds
+    max_verification_attempts: int = 5
+    handle_speedbump_popup: bool = True  # Handle "আমি বুঝি" button automatically
+
 class ConfigManager:
     """Configuration management system"""
     
@@ -85,6 +97,7 @@ class ConfigManager:
         self.paths = PathConfig()
         self.ui = UIConfig()
         self.security = SecurityConfig()
+        self.approver = ApproverConfig()
         
         # Load existing config if available
         self.load_config()
@@ -124,6 +137,8 @@ class ConfigManager:
                     self.ui = UIConfig(**data['ui'])
                 if 'security' in data:
                     self.security = SecurityConfig(**data['security'])
+                if 'approver' in data:
+                    self.approver = ApproverConfig(**data['approver'])
                 
                 return True
         except Exception as e:
@@ -140,6 +155,7 @@ class ConfigManager:
                 'paths': asdict(self.paths),
                 'ui': asdict(self.ui),
                 'security': asdict(self.security),
+                'approver': asdict(self.approver),
                 'last_updated': datetime.now().isoformat()
             }
             
@@ -248,6 +264,12 @@ class ConfigManager:
             if hasattr(self.ui, key):
                 setattr(self.ui, key, value)
     
+    def update_approver_config(self, **kwargs):
+        """Update approver configuration"""
+        for key, value in kwargs.items():
+            if hasattr(self.approver, key):
+                setattr(self.approver, key, value)
+    
     def reset_to_defaults(self):
         """Reset all configurations to defaults"""
         self.browser = BrowserConfig()
@@ -255,6 +277,7 @@ class ConfigManager:
         self.paths = PathConfig()
         self.ui = UIConfig()
         self.security = SecurityConfig()
+        self.approver = ApproverConfig()
     
     def export_config(self, file_path: str) -> bool:
         """Export configuration to a specific file"""
@@ -265,6 +288,7 @@ class ConfigManager:
                 'paths': asdict(self.paths),
                 'ui': asdict(self.ui),
                 'security': asdict(self.security),
+                'approver': asdict(self.approver),
                 'exported_at': datetime.now().isoformat()
             }
             
@@ -292,6 +316,8 @@ class ConfigManager:
                 self.ui = UIConfig(**data['ui'])
             if 'security' in data:
                 self.security = SecurityConfig(**data['security'])
+            if 'approver' in data:
+                self.approver = ApproverConfig(**data['approver'])
             
             return True
         except Exception:
