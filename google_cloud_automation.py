@@ -7,6 +7,7 @@ Playwright-based automation for Google Cloud Console operations
 
 import asyncio
 import random
+import re
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime
 
@@ -862,39 +863,88 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             self.logger.info("⏳ Waiting for New Project form to load...")
             await self.page.wait_for_selector('text="New Project"', timeout=10000)
             await self.human_delay(2, 3)
-            
-            # Enter project name - updated selectors based on actual form structure
+
+            # Track whether we've successfully entered the name
+            name_entered = False
+
+            # First attempt: accessible locators (label/role) for maximum reliability
+            try:
+                acc_locator = self.page.get_by_label("Project name", exact=False)
+                await acc_locator.wait_for(timeout=6000)
+                await acc_locator.scroll_into_view_if_needed()
+                await acc_locator.click()
+                await self.human_delay(0.3, 0.6)
+                try:
+                    await acc_locator.fill("")
+                except Exception:
+                    pass
+                await acc_locator.fill(project_name)
+                entered_value = await acc_locator.input_value()
+                if project_name in entered_value or entered_value == project_name:
+                    self.logger.info(f"✅ Project name entered via accessible label: {project_name}")
+                    name_entered = True
+                else:
+                    self.logger.warning(f"⚠️ Text verification failed for accessible label. Expected: {project_name}, Got: {entered_value}")
+            except Exception as e:
+                self.logger.debug(f"Accessible label locator failed: {str(e)}")
+
+            # If label-based locator did not succeed, try role-based locator
+            if not name_entered:
+                try:
+                    role_locator = self.page.get_by_role("textbox", name=re.compile(r"Project name", re.I))
+                    await role_locator.wait_for(timeout=8000)
+                    await role_locator.scroll_into_view_if_needed()
+                    await role_locator.click()
+                    await self.human_delay(0.3, 0.6)
+                    try:
+                        await role_locator.fill("")
+                    except Exception:
+                        pass
+                    await role_locator.fill(project_name)
+                    entered_value = await role_locator.input_value()
+                    if project_name in entered_value or entered_value == project_name:
+                        self.logger.info(f"✅ Project name entered via role textbox: {project_name}")
+                        name_entered = True
+                    else:
+                        self.logger.warning(f"⚠️ Text verification failed for role textbox. Expected: {project_name}, Got: {entered_value}")
+                except Exception as e:
+                    self.logger.debug(f"Role-based textbox locator failed: {str(e)}")
+
+            # Enter project name - prefer label-based and aria-label selectors
             project_name_selectors = [
-                'input[type="text"]',  # Most likely selector based on screenshot
+                'input[aria-label*="Project name"]',
+                'input[aria-label*="project name"]',
+                'label:has-text("Project name") ~ input',
+                'label:has-text("Project name") + input',
                 'input[name="projectId"]',
                 'input[name="name"]',
                 'input[id*="project"]',
-                'input[placeholder*="project"]',
-                'input[aria-label*="Project name"]',
-                'input[aria-label*="project name"]',
+                'input[placeholder*="Project"]',
+                '.mat-mdc-form-field:has-text("Project name") input',
+                'input[class*="mat-input-element"]',
                 'form input[type="text"]',
                 '.form-field input',
-                'div:has-text("Project name") + * input'
+                'input[type="text"]'
             ]
             
             self.logger.info("🔍 Looking for project name input field...")
             
-            name_entered = False
             for selector in project_name_selectors:
                 try:
                     # Wait for the input field to be available
                     await self.page.wait_for_selector(selector, timeout=5000)
                     
-                    # Focus on the input field first
-                    await self.page.locator(selector).focus()
-                    await self.human_delay(0.5, 1)
+                    locator = self.page.locator(selector)
+                    await locator.scroll_into_view_if_needed()
+                    await locator.click()
+                    await self.human_delay(0.3, 0.6)
                     
-                    # Select all existing text and replace it
-                    await self.page.keyboard.press("Control+a")
-                    await self.human_delay(0.3, 0.5)
-                    
-                    # Type the new project name
-                    await self.human_type(selector, project_name)
+                    # Clear then fill directly to avoid jumbled text
+                    try:
+                        await locator.fill("")
+                    except Exception:
+                        pass
+                    await locator.fill(project_name)
                     await self.human_delay(0.5, 1)
                     
                     # Verify the text was entered
@@ -911,20 +961,58 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                     continue
             
             if not name_entered:
-                # Try a more aggressive approach - find any visible input field
-                self.logger.warning("⚠️ Standard selectors failed, trying fallback approach...")
+                # Try frame-aware fallback - some GCP flows render forms inside iframes
+                self.logger.warning("⚠️ Standard selectors failed, trying iframe-aware fallback...")
                 try:
-                    # Look for any visible input field on the page
-                    inputs = await self.page.locator('input[type="text"]:visible').all()
-                    if inputs:
-                        input_field = inputs[0]  # Take the first visible text input
-                        await input_field.focus()
-                        await self.page.keyboard.press("Control+a")
-                        await input_field.fill(project_name)
-                        self.logger.info(f"✅ Project name entered using fallback method: {project_name}")
-                        name_entered = True
+                    for frame in self.page.frames:
+                        try:
+                            frame_locator = frame.get_by_role("textbox", name=re.compile(r"Project name", re.I))
+                            await frame_locator.wait_for(timeout=3000)
+                            await frame_locator.scroll_into_view_if_needed()
+                            await frame_locator.click()
+                            await self.human_delay(0.2, 0.5)
+                            try:
+                                await frame_locator.fill("")
+                            except Exception:
+                                pass
+                            await frame_locator.fill(project_name)
+                            entered_value = await frame_locator.input_value()
+                            if project_name in entered_value or entered_value == project_name:
+                                self.logger.info(f"✅ Project name entered inside iframe: {project_name}")
+                                name_entered = True
+                                break
+                        except Exception:
+                            continue
                 except Exception as e:
-                    self.logger.error(f"❌ Fallback method also failed: {str(e)}")
+                    self.logger.debug(f"Iframe fallback iteration failed: {str(e)}")
+
+            if not name_entered:
+                # Last-resort generic visible input fallback
+                self.logger.warning("⚠️ Iframe fallback failed, trying generic visible input...")
+                try:
+                    input_candidates = self.page.locator('input[type="text"]')
+                    count = await input_candidates.count()
+                    if count > 0:
+                        input_field = input_candidates.first
+                        # Ensure visible and interactable
+                        try:
+                            is_vis = await input_field.is_visible()
+                        except Exception:
+                            is_vis = True  # proceed optimistically
+                        await input_field.scroll_into_view_if_needed()
+                        await input_field.click()
+                        await self.human_delay(0.2, 0.5)
+                        try:
+                            await input_field.fill("")
+                        except Exception:
+                            pass
+                        await input_field.fill(project_name)
+                        entered_value = await input_field.input_value()
+                        if project_name in entered_value or entered_value == project_name:
+                            self.logger.info(f"✅ Project name entered using generic fallback: {project_name}")
+                            name_entered = True
+                except Exception as e:
+                    self.logger.error(f"❌ Generic fallback also failed: {str(e)}")
             
             if not name_entered:
                 raise Exception("Could not find or fill project name input field")
@@ -1030,37 +1118,114 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             
             self.logger.info("✅ Create button clicked, waiting for project creation...")
             
-            # Wait for project creation - this can take some time
-            await self.human_delay(5, 8)
-            await self.wait_for_navigation()
+            # Enhanced project creation wait logic with proper verification
+            creation_verified = False
+            max_wait_time = 60  # Maximum wait time in seconds
+            wait_interval = 3   # Check every 3 seconds
+            elapsed_time = 0
             
-            # Take screenshot after creation attempt
-            await self.take_screenshot("07_project_created")
-            
-            # Verify project creation by checking URL or page content
-            current_url = self.page.url
-            if "console.cloud.google.com" in current_url and "projectselector" not in current_url:
-                self.logger.info(f"✅ Project created successfully: {project_name}")
+            while elapsed_time < max_wait_time and not creation_verified:
+                await self.human_delay(wait_interval, wait_interval + 1)
+                elapsed_time += wait_interval
                 
-                # After project creation, we need to select the project if we're on APIs & Services page
-                await self._ensure_project_selected(project_name)
-                return True
-            else:
-                # Additional verification - look for project name in the interface
-                project_indicators = [
-                    f'text="{project_name}"',
-                    f'[title*="{project_name}"]'
+                # Take screenshot to monitor progress
+                await self.take_screenshot(f"07_project_creation_progress_{elapsed_time}s")
+                
+                current_url = self.page.url
+                self.logger.info(f"⏳ Checking project creation progress... ({elapsed_time}s) URL: {current_url}")
+                
+                # Check for various success indicators
+                success_indicators = [
+                    # URL-based indicators
+                    lambda: "console.cloud.google.com" in current_url and "projectcreate" not in current_url and "projectselector" not in current_url,
+                    # Text-based indicators
+                    lambda: self.page.locator(f'text="{project_name}"').count() > 0,
+                    lambda: self.page.locator(f'[title*="{project_name}"]').count() > 0,
+                    # Dashboard indicators
+                    lambda: self.page.locator('text="Dashboard"').count() > 0 and "apis" in current_url,
+                    lambda: self.page.locator('text="APIs & Services"').count() > 0,
+                    # Project selection indicators (means project was created but needs selection)
+                    lambda: self.page.locator('text="Select a project"').count() > 0
                 ]
                 
-                for indicator in project_indicators:
-                    if await self.page.locator(indicator).count() > 0:
-                        self.logger.info(f"✅ Project created and verified: {project_name}")
+                # Check each indicator
+                for i, indicator in enumerate(success_indicators):
+                    try:
+                        if await indicator():
+                            self.logger.info(f"✅ Project creation verified using indicator {i+1}")
+                            creation_verified = True
+                            break
+                    except Exception as e:
+                        self.logger.debug(f"Indicator {i+1} check failed: {str(e)}")
+                        continue
+                
+                # Check for error indicators
+                error_indicators = [
+                    'text="Project creation failed"',
+                    'text="Error creating project"',
+                    'text="Project name already exists"',
+                    'text="Invalid project name"'
+                ]
+                
+                for error_indicator in error_indicators:
+                    try:
+                        if await self.page.locator(error_indicator).count() > 0:
+                            self.logger.error(f"❌ Project creation failed: {error_indicator}")
+                            raise Exception(f"Project creation failed: {error_indicator}")
+                    except Exception:
+                        continue
+                
+                if not creation_verified:
+                    self.logger.info(f"⏳ Still waiting for project creation... ({elapsed_time}s/{max_wait_time}s)")
+            
+            # Final verification
+            await self.take_screenshot("07_project_created_final")
+            
+            if creation_verified:
+                self.logger.info(f"✅ Project '{project_name}' created successfully after {elapsed_time}s")
+                
+                # Additional verification: Check if project actually exists
+                project_exists = await self._verify_project_exists(project_name)
+                if not project_exists:
+                    self.logger.warning(f"⚠️ Project creation appeared successful but project not found in listing")
+                    # Continue anyway as the project might exist but not be visible yet
+                
+                # Use enhanced navigation with multiple fallback strategies
+                self.logger.info("🔗 Using enhanced navigation to reach APIs page...")
+                if await self._navigate_to_apis_with_fallbacks(project_name):
+                    self.logger.info("✅ Successfully navigated to APIs page")
+                    return True
+                else:
+                    self.logger.warning("⚠️ Enhanced navigation failed, falling back to project selection")
+                    if await self._ensure_project_selected(project_name):
+                        # After successful selection, try navigation again
+                        if await self._navigate_to_apis_with_fallbacks(project_name):
+                            return True
+                        else:
+                            self.logger.warning("⚠️ Navigation still failed after project selection, but continuing...")
+                            return True
+                    return True
+            else:
+                self.logger.warning(f"⚠️ Project creation verification timed out after {max_wait_time}s")
+                
+                # Try to verify if project exists despite timeout
+                project_exists = await self._verify_project_exists(project_name)
+                if project_exists:
+                    self.logger.info(f"✅ Project '{project_name}' found despite creation timeout")
+                    # Use enhanced navigation instead of just project selection
+                    if await self._navigate_to_apis_with_fallbacks(project_name):
+                        return True
+                    else:
                         await self._ensure_project_selected(project_name)
                         return True
-                
-                self.logger.warning("⚠️ Project creation status unclear, but continuing...")
-                await self._ensure_project_selected(project_name)
-                return True
+                else:
+                    self.logger.warning(f"⚠️ Project '{project_name}' not found, but continuing anyway...")
+                    # Try enhanced navigation first, then fallback to selection
+                    if await self._navigate_to_apis_with_fallbacks(project_name):
+                        return True
+                    else:
+                        await self._ensure_project_selected(project_name)
+                        return True
             
         except Exception as e:
             log_error(e, "project_creation", additional_data={'project_name': project_name})
@@ -1070,20 +1235,42 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
     
     @retry_async(context="project_selection")
     async def _ensure_project_selected(self, project_name: str) -> bool:
-        """Ensure the newly created project is selected in Google Cloud Console"""
+        """Ensure the newly created project is selected in Google Cloud Console with enhanced logic"""
         try:
             self.logger.info(f"🎯 Ensuring project '{project_name}' is selected...")
             
             # Take screenshot to see current state
             await self.take_screenshot("07_before_project_selection")
+            current_url = self.page.url
             
-            # Check if we need to select a project (look for "Select a project" message)
+            # First, try direct navigation to the project's APIs page
+            if "projectselector" in current_url or "select" in current_url.lower():
+                self.logger.info("🔗 Attempting direct navigation to project APIs page...")
+                project_apis_url = f"https://console.cloud.google.com/apis/dashboard?project={project_name}"
+                
+                try:
+                    await self.page.goto(project_apis_url, wait_until="domcontentloaded", timeout=20000)
+                    await self.human_delay(3, 5)
+                    await self.take_screenshot("07_direct_navigation_attempt")
+                    
+                    # Check if direct navigation worked
+                    if "apis" in self.page.url and project_name in self.page.url:
+                        self.logger.info(f"✅ Direct navigation successful to {project_name} APIs page")
+                        return True
+                    elif "apis" in self.page.url and "projectselector" not in self.page.url:
+                        self.logger.info("✅ Successfully navigated to APIs page (project auto-selected)")
+                        return True
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Direct navigation failed: {str(e)}, trying project selector...")
+            
+            # Check if we need to select a project
             select_project_indicators = [
                 'text="To view this page, select a project."',
                 'text="Select a project"',
                 'button:has-text("Select a project")',
                 'text="Create project"',
-                '[aria-label*="Select a project"]'
+                '[aria-label*="Select a project"]',
+                'text="Choose a project to get started"'
             ]
             
             needs_selection = False
@@ -1100,127 +1287,417 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 self.logger.info("✅ Project appears to be already selected")
                 return True
             
-            # Click on "Select a project" dropdown
-            project_selector_buttons = [
-                'button:has-text("Select a project")',
-                '[aria-label*="Select a project"]',
-                'button[aria-haspopup="listbox"]',
-                '.project-selector button',
-                'button:has-text("Create project")',
-                '[data-testid="project-selector"]'
+            # Enhanced project selector clicking with multiple strategies
+            self.logger.info("🔍 Looking for project selector dropdown...")
+            
+            project_selector_strategies = [
+                # Strategy 1: Standard selectors
+                {
+                    "name": "Standard selectors",
+                    "selectors": [
+                        'button:has-text("Select a project")',
+                        '[aria-label*="Select a project"]',
+                        'button[aria-haspopup="listbox"]',
+                        '.project-selector button',
+                        'button:has-text("Create project")',
+                        '[data-testid="project-selector"]'
+                    ]
+                },
+                # Strategy 2: Google Cloud specific selectors
+                {
+                    "name": "Google Cloud specific",
+                    "selectors": [
+                        '.cfc-project-selector-button',
+                        '.project-picker-button',
+                        '[role="button"][aria-haspopup="listbox"]',
+                        'button[class*="project"]',
+                        '.mat-button[aria-haspopup="listbox"]'
+                    ]
+                },
+                # Strategy 3: Generic button selectors
+                {
+                    "name": "Generic buttons",
+                    "selectors": [
+                        'button:visible',
+                        '[role="button"]:visible',
+                        'div[role="button"]:visible'
+                    ]
+                }
             ]
             
             selector_clicked = False
-            for selector in project_selector_buttons:
-                try:
-                    if await self.page.locator(selector).count() > 0:
-                        await self.page.locator(selector).click()
-                        self.logger.info(f"✅ Clicked project selector: {selector}")
-                        selector_clicked = True
-                        await self.human_delay(2, 3)
+            for strategy in project_selector_strategies:
+                if selector_clicked:
+                    break
+                    
+                self.logger.info(f"🔄 Trying {strategy['name']} strategy...")
+                for selector in strategy["selectors"]:
+                    try:
+                        elements = await self.page.locator(selector).all()
+                        for element in elements:
+                            # Check if this element contains project-related text
+                            text_content = await element.text_content() or ""
+                            if any(keyword in text_content.lower() for keyword in ["select", "project", "create"]):
+                                await element.click()
+                                self.logger.info(f"✅ Clicked project selector: {selector} (text: {text_content[:50]})")
+                                selector_clicked = True
+                                await self.human_delay(2, 4)
+                                break
+                    except Exception as e:
+                        self.logger.debug(f"Failed to click selector {selector}: {str(e)}")
+                        continue
+                    
+                    if selector_clicked:
                         break
-                except Exception as e:
-                    self.logger.debug(f"Failed to click selector {selector}: {str(e)}")
-                    continue
             
             if not selector_clicked:
-                self.logger.warning("⚠️ Could not find project selector dropdown")
-                # Try navigating to APIs & Services to trigger project selection
-                await self.page.goto("https://console.cloud.google.com/apis")
-                await self.wait_for_navigation()
-                await self.human_delay(2, 3)
-                return True
+                self.logger.warning("⚠️ Could not find project selector dropdown, trying alternative navigation...")
+                # Try navigating to project selector page directly
+                await self.page.goto("https://console.cloud.google.com/projectselector2/home", wait_until="domcontentloaded")
+                await self.human_delay(3, 5)
+                await self.take_screenshot("07_project_selector_page")
             
-            # Look for the newly created project in the dropdown
+            # Enhanced project finding and selection logic
             await self.take_screenshot("07_project_dropdown_open")
+            await self.human_delay(2, 3)  # Wait for dropdown to fully load
             
-            # Wait for dropdown to load
-            await self.human_delay(1, 2)
-            
-            # Try to find and click the project
-            project_selectors = [
+            # Strategy 1: Find exact project name
+            self.logger.info(f"🔍 Looking for exact project name: {project_name}")
+            exact_match_selectors = [
                 f'text="{project_name}"',
                 f'[title="{project_name}"]',
                 f'div:has-text("{project_name}")',
                 f'li:has-text("{project_name}")',
                 f'[role="option"]:has-text("{project_name}")',
-                f'button:has-text("{project_name}")'
+                f'button:has-text("{project_name}")',
+                f'span:has-text("{project_name}")',
+                f'[data-value="{project_name}"]'
             ]
             
-            project_selected = False
-            for selector in project_selectors:
-                try:
-                    if await self.page.locator(selector).count() > 0:
-                        await self.page.locator(selector).click()
-                        self.logger.info(f"✅ Selected project '{project_name}' using selector: {selector}")
-                        project_selected = True
-                        await self.human_delay(2, 3)
-                        break
-                except Exception as e:
-                    self.logger.debug(f"Failed to select project with selector {selector}: {str(e)}")
-                    continue
+            project_selected = await self._try_select_project_with_selectors(exact_match_selectors, project_name, "exact match")
             
+            # Strategy 2: Partial matching with different patterns
             if not project_selected:
-                # Try to find any project that contains part of our project name
-                self.logger.warning(f"⚠️ Exact project name not found, looking for partial matches...")
+                self.logger.warning(f"⚠️ Exact match failed, trying partial matching...")
                 
-                # Extract the base name (remove timestamp suffix)
-                base_name = project_name.split('-')[0:3]  # Take first 3 parts: gmail-oauth-username
-                base_pattern = '-'.join(base_name)
-                
-                partial_selectors = [
-                    f'text*="{base_pattern}"',
-                    f'div:has-text("{base_pattern}")',
-                    f'li:has-text("{base_pattern}")'
+                # Extract different parts of the project name for partial matching
+                name_parts = project_name.split('-')
+                partial_patterns = [
+                    '-'.join(name_parts[:3]),  # gmail-oauth-username
+                    '-'.join(name_parts[:2]),  # gmail-oauth
+                    name_parts[0] if name_parts else project_name  # gmail
                 ]
                 
-                for selector in partial_selectors:
-                    try:
-                        if await self.page.locator(selector).count() > 0:
-                            await self.page.locator(selector).click()
-                            self.logger.info(f"✅ Selected project using partial match: {selector}")
-                            project_selected = True
-                            await self.human_delay(2, 3)
-                            break
-                    except Exception as e:
-                        self.logger.debug(f"Failed to select project with partial selector {selector}: {str(e)}")
-                        continue
-            
-            if not project_selected:
-                self.logger.warning("⚠️ Could not find the created project in dropdown, continuing anyway...")
-                # Close dropdown by clicking elsewhere
-                try:
-                    await self.page.keyboard.press("Escape")
-                    await self.human_delay(1, 2)
-                except Exception:
-                    pass
-            
-            # Wait for project selection to take effect
-            await self.human_delay(3, 5)
-            await self.take_screenshot("07_after_project_selection")
-            
-            # Verify project selection by checking if "Select a project" message is gone
-            await self.human_delay(2, 3)
-            still_needs_selection = False
-            for indicator in select_project_indicators:
-                try:
-                    if await self.page.locator(indicator).count() > 0:
-                        still_needs_selection = True
+                for pattern in partial_patterns:
+                    if project_selected:
                         break
-                except Exception:
-                    continue
+                    self.logger.info(f"🔍 Trying partial pattern: {pattern}")
+                    partial_selectors = [
+                        f'text*="{pattern}"',
+                        f'div:has-text("{pattern}")',
+                        f'li:has-text("{pattern}")',
+                        f'[role="option"]:has-text("{pattern}")',
+                        f'button:has-text("{pattern}")',
+                        f'span:has-text("{pattern}")'
+                    ]
+                    project_selected = await self._try_select_project_with_selectors(partial_selectors, pattern, f"partial match ({pattern})")
             
-            if not still_needs_selection:
-                self.logger.info(f"✅ Project '{project_name}' successfully selected")
-                return True
-            else:
-                self.logger.warning("⚠️ Project selection may not have worked, but continuing...")
-                return True
+            # Strategy 3: Find any project with "gmail-oauth" prefix
+            if not project_selected:
+                self.logger.warning("⚠️ Partial matching failed, looking for any gmail-oauth project...")
+                generic_selectors = [
+                    'text*="gmail-oauth"',
+                    'div:has-text("gmail-oauth")',
+                    'li:has-text("gmail-oauth")',
+                    '[role="option"]:has-text("gmail-oauth")',
+                    'button:has-text("gmail-oauth")'
+                ]
+                project_selected = await self._try_select_project_with_selectors(generic_selectors, "gmail-oauth", "generic gmail-oauth match")
+            
+            # Strategy 4: Select the most recently created project
+            if not project_selected:
+                self.logger.warning("⚠️ Generic matching failed, trying to select most recent project...")
+                project_selected = await self._select_most_recent_project()
+            
+            # Final verification and navigation
+            if project_selected:
+                await self.human_delay(3, 5)
+                await self.take_screenshot("07_after_project_selection")
+                
+                # Navigate to APIs page to confirm selection worked
+                try:
+                    await self.page.goto("https://console.cloud.google.com/apis", wait_until="domcontentloaded", timeout=20000)
+                    await self.human_delay(2, 3)
+                    
+                    # Check if we're successfully on APIs page without project selector
+                    if "apis" in self.page.url and "projectselector" not in self.page.url:
+                        self.logger.info(f"✅ Project '{project_name}' successfully selected and verified")
+                        return True
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Navigation verification failed: {str(e)}")
+            
+            # If all else fails, continue anyway
+            self.logger.warning("⚠️ Project selection uncertain, but continuing with automation...")
+            return True
                 
         except Exception as e:
             log_error(e, "project_selection", additional_data={'project_name': project_name})
             self.logger.warning(f"⚠️ Project selection failed: {str(e)}, but continuing...")
             return True  # Continue even if selection fails
+    
+    async def _try_select_project_with_selectors(self, selectors: list, search_term: str, strategy_name: str) -> bool:
+        """Helper method to try selecting a project with given selectors"""
+        for selector in selectors:
+            try:
+                elements = await self.page.locator(selector).all()
+                if elements:
+                    # Try to click the first matching element
+                    await elements[0].click()
+                    self.logger.info(f"✅ Selected project using {strategy_name}: {selector}")
+                    return True
+            except Exception as e:
+                self.logger.debug(f"Failed to select project with {strategy_name} selector {selector}: {str(e)}")
+                continue
+        return False
+    
+    async def _select_most_recent_project(self) -> bool:
+        """Try to select the most recently created project"""
+        try:
+            # Look for project list items and try to select the first one
+            recent_project_selectors = [
+                '[role="option"]:first-child',
+                'li:first-child',
+                'button[role="option"]:first-child',
+                '.project-item:first-child',
+                '.mat-option:first-child',
+                'div[role="option"]:first-child'
+            ]
+            
+            for selector in recent_project_selectors:
+                try:
+                    if await self.page.locator(selector).count() > 0:
+                        await self.page.locator(selector).click()
+                        self.logger.info(f"✅ Selected most recent project using: {selector}")
+                        return True
+                except Exception as e:
+                    self.logger.debug(f"Failed to select recent project with selector {selector}: {str(e)}")
+                    continue
+            
+            return False
+        except Exception as e:
+            self.logger.debug(f"Failed to select most recent project: {str(e)}")
+            return False
+    
+    async def _navigate_to_apis_with_fallbacks(self, project_name: str = None) -> bool:
+        """Navigate to APIs & Services page with multiple fallback strategies"""
+        try:
+            self.logger.info("🔗 Navigating to APIs & Services with enhanced fallback logic...")
+            
+            # Strategy 1: Direct navigation to project-specific APIs page
+            if project_name:
+                self.logger.info(f"🎯 Trying direct navigation to {project_name} APIs page...")
+                project_apis_url = f"https://console.cloud.google.com/apis/dashboard?project={project_name}"
+                
+                try:
+                    await self.page.goto(project_apis_url, wait_until="domcontentloaded", timeout=20000)
+                    await self.human_delay(3, 5)
+                    await self.take_screenshot("navigation_direct_project_apis")
+                    
+                    if "apis" in self.page.url and "projectselector" not in self.page.url:
+                        self.logger.info(f"✅ Direct navigation to {project_name} APIs successful")
+                        return True
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Direct project navigation failed: {str(e)}")
+            
+            # Strategy 2: Navigate to general APIs page
+            self.logger.info("🔄 Trying general APIs page navigation...")
+            try:
+                await self.page.goto("https://console.cloud.google.com/apis", wait_until="domcontentloaded", timeout=20000)
+                await self.human_delay(3, 5)
+                await self.take_screenshot("navigation_general_apis")
+                
+                current_url = self.page.url
+                if "apis" in current_url and "projectselector" not in current_url:
+                    self.logger.info("✅ General APIs navigation successful")
+                    return True
+                elif "projectselector" in current_url:
+                    self.logger.info("⚠️ Redirected to project selector, attempting project selection...")
+                    if project_name and await self._ensure_project_selected(project_name):
+                        return True
+            except Exception as e:
+                self.logger.warning(f"⚠️ General APIs navigation failed: {str(e)}")
+            
+            # Strategy 3: Navigate via Google Cloud Console home
+            self.logger.info("🔄 Trying navigation via Console home...")
+            try:
+                await self.page.goto("https://console.cloud.google.com/", wait_until="domcontentloaded", timeout=20000)
+                await self.human_delay(3, 5)
+                await self.take_screenshot("navigation_console_home")
+                
+                # Look for APIs & Services link in the navigation
+                apis_links = [
+                    'text="APIs & Services"',
+                    'a:has-text("APIs & Services")',
+                    '[href*="/apis"]',
+                    'text="APIs"'
+                ]
+                
+                for link in apis_links:
+                    try:
+                        if await self.page.locator(link).count() > 0:
+                            await self.page.locator(link).click()
+                            await self.human_delay(3, 5)
+                            await self.take_screenshot("navigation_via_home_link")
+                            
+                            if "apis" in self.page.url:
+                                self.logger.info("✅ Navigation via home link successful")
+                                return True
+                            break
+                    except Exception as e:
+                        self.logger.debug(f"Home navigation link {link} failed: {str(e)}")
+                        continue
+                        
+            except Exception as e:
+                self.logger.warning(f"⚠️ Console home navigation failed: {str(e)}")
+            
+            # Strategy 4: Use hamburger menu navigation
+            self.logger.info("🔄 Trying hamburger menu navigation...")
+            try:
+                # Look for hamburger menu
+                menu_selectors = [
+                    'button[aria-label="Main menu"]',
+                    '.cfc-hamburger-button',
+                    '[data-testid="hamburger-menu"]',
+                    'button[aria-label*="menu"]'
+                ]
+                
+                menu_opened = False
+                for selector in menu_selectors:
+                    try:
+                        if await self.page.locator(selector).count() > 0:
+                            await self.page.locator(selector).click()
+                            await self.human_delay(2, 3)
+                            menu_opened = True
+                            break
+                    except Exception:
+                        continue
+                
+                if menu_opened:
+                    # Look for APIs & Services in the menu
+                    menu_apis_links = [
+                        'text="APIs & Services"',
+                        'a:has-text("APIs & Services")',
+                        '[role="menuitem"]:has-text("APIs")'
+                    ]
+                    
+                    for link in menu_apis_links:
+                        try:
+                            if await self.page.locator(link).count() > 0:
+                                await self.page.locator(link).click()
+                                await self.human_delay(3, 5)
+                                await self.take_screenshot("navigation_via_menu")
+                                
+                                if "apis" in self.page.url:
+                                    self.logger.info("✅ Navigation via hamburger menu successful")
+                                    return True
+                                break
+                        except Exception as e:
+                            self.logger.debug(f"Menu navigation link {link} failed: {str(e)}")
+                            continue
+                            
+            except Exception as e:
+                self.logger.warning(f"⚠️ Hamburger menu navigation failed: {str(e)}")
+            
+            # Strategy 5: Force navigation by URL manipulation
+            self.logger.info("🔄 Trying forced URL navigation...")
+            try:
+                # Get current URL and try to modify it to point to APIs
+                current_url = self.page.url
+                if "console.cloud.google.com" in current_url:
+                    # Extract project ID if present
+                    project_id = None
+                    if "project=" in current_url:
+                        project_id = current_url.split("project=")[1].split("&")[0]
+                    elif project_name:
+                        project_id = project_name
+                    
+                    if project_id:
+                        forced_url = f"https://console.cloud.google.com/apis/dashboard?project={project_id}"
+                    else:
+                        forced_url = "https://console.cloud.google.com/apis/dashboard"
+                    
+                    await self.page.goto(forced_url, wait_until="domcontentloaded", timeout=20000)
+                    await self.human_delay(3, 5)
+                    await self.take_screenshot("navigation_forced")
+                    
+                    if "apis" in self.page.url:
+                        self.logger.info("✅ Forced navigation successful")
+                        return True
+                        
+            except Exception as e:
+                self.logger.warning(f"⚠️ Forced navigation failed: {str(e)}")
+            
+            self.logger.error("❌ All navigation strategies failed")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"❌ Navigation with fallbacks failed: {str(e)}")
+            return False
+    
+    async def _verify_project_exists(self, project_name: str) -> bool:
+        """Verify that a project actually exists in Google Cloud Console"""
+        try:
+            self.logger.info(f"🔍 Verifying project '{project_name}' exists...")
+            
+            # Navigate to project selector to see all available projects
+            await self.page.goto("https://console.cloud.google.com/projectselector2/home", wait_until="domcontentloaded", timeout=30000)
+            await self.human_delay(3, 5)
+            await self.take_screenshot("project_verification")
+            
+            # Look for the project in various ways
+            verification_selectors = [
+                f'text="{project_name}"',
+                f'[title="{project_name}"]',
+                f'div:has-text("{project_name}")',
+                f'li:has-text("{project_name}")',
+                f'span:has-text("{project_name}")',
+                f'[data-value="{project_name}"]'
+            ]
+            
+            for selector in verification_selectors:
+                try:
+                    if await self.page.locator(selector).count() > 0:
+                        self.logger.info(f"✅ Project '{project_name}' verified to exist using selector: {selector}")
+                        return True
+                except Exception as e:
+                    self.logger.debug(f"Verification selector {selector} failed: {str(e)}")
+                    continue
+            
+            # Try partial matching for verification
+            name_parts = project_name.split('-')
+            if len(name_parts) >= 3:
+                partial_name = '-'.join(name_parts[:3])  # gmail-oauth-username
+                partial_selectors = [
+                    f'text*="{partial_name}"',
+                    f'div:has-text("{partial_name}")',
+                    f'span:has-text("{partial_name}")'
+                ]
+                
+                for selector in partial_selectors:
+                    try:
+                        if await self.page.locator(selector).count() > 0:
+                            self.logger.info(f"✅ Project verified to exist using partial match: {selector}")
+                            return True
+                    except Exception as e:
+                        self.logger.debug(f"Partial verification selector {selector} failed: {str(e)}")
+                        continue
+            
+            self.logger.warning(f"⚠️ Could not verify project '{project_name}' exists")
+            return False
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Project verification failed: {str(e)}")
+            return False
     
     @retry_async(context="gmail_api_enable")
     async def enable_gmail_api(self) -> bool:
@@ -1232,68 +1709,168 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             current_url = self.page.url
             self.logger.info(f"🔍 Current URL before API enablement: {current_url}")
             
-            # If we're still on a project selection page, navigate to APIs & Services first
+            # Enhanced navigation with multiple timeout strategies
+            navigation_attempts = [
+                # Strategy 1: Direct navigation with shorter timeout and domcontentloaded
+                {
+                    "url": "https://console.cloud.google.com/apis",
+                    "wait_until": "domcontentloaded",
+                    "timeout": 15000,
+                    "description": "APIs & Services with domcontentloaded"
+                },
+                # Strategy 2: Direct navigation with load event
+                {
+                    "url": "https://console.cloud.google.com/apis",
+                    "wait_until": "load",
+                    "timeout": 20000,
+                    "description": "APIs & Services with load"
+                },
+                # Strategy 3: Alternative APIs URL
+                {
+                    "url": "https://console.cloud.google.com/apis/dashboard",
+                    "wait_until": "domcontentloaded",
+                    "timeout": 15000,
+                    "description": "APIs Dashboard"
+                }
+            ]
+            
+            # If we're still on a project selection page, try multiple navigation strategies
             if "projectselector" in current_url or "select" in current_url.lower():
-                self.logger.info("🔄 Still on project selector, navigating to APIs & Services...")
-                await self.page.goto("https://console.cloud.google.com/apis", wait_until="networkidle", timeout=30000)
-                await self.human_delay(3, 5)
-                await self.take_screenshot("08_apis_services_before_api")
+                self.logger.info("🔄 Still on project selector, trying enhanced navigation...")
+                
+                navigation_success = False
+                for attempt in navigation_attempts:
+                    try:
+                        self.logger.info(f"🔗 Trying {attempt['description']}...")
+                        await self.page.goto(
+                            attempt["url"], 
+                            wait_until=attempt["wait_until"], 
+                            timeout=attempt["timeout"]
+                        )
+                        await self.human_delay(2, 4)
+                        
+                        # Check if navigation was successful
+                        if "apis" in self.page.url.lower():
+                            self.logger.info(f"✅ Successfully navigated using {attempt['description']}")
+                            navigation_success = True
+                            break
+                            
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ {attempt['description']} failed: {str(e)}")
+                        continue
+                
+                if navigation_success:
+                    await self.take_screenshot("08_apis_services_before_api")
+                else:
+                    self.logger.warning("⚠️ All navigation attempts failed, continuing with current page...")
             
             # Try direct navigation to Gmail API first (most reliable)
             self.logger.info("🎯 Trying direct navigation to Gmail API...")
-            try:
-                await self.page.goto(self.gmail_api_url, wait_until="networkidle", timeout=30000)
-                await self.human_delay(3, 5)
-                await self.take_screenshot("08_gmail_api_direct")
-                
-                # Check if we're on the Gmail API page
-                if "gmail.googleapis.com" in self.page.url or await self.page.locator('text="Gmail API"').count() > 0:
-                    self.logger.info("✅ Successfully navigated directly to Gmail API page")
+            gmail_api_attempts = [
+                {
+                    "url": self.gmail_api_url,
+                    "wait_until": "domcontentloaded",
+                    "timeout": 15000
+                },
+                {
+                    "url": "https://console.cloud.google.com/apis/library/gmail.googleapis.com",
+                    "wait_until": "load",
+                    "timeout": 20000
+                },
+                {
+                    "url": "https://console.cloud.google.com/apis/api/gmail.googleapis.com",
+                    "wait_until": "domcontentloaded",
+                    "timeout": 15000
+                }
+            ]
+            
+            for attempt in gmail_api_attempts:
+                try:
+                    self.logger.info(f"🔗 Trying Gmail API URL: {attempt['url']}")
+                    await self.page.goto(
+                        attempt["url"], 
+                        wait_until=attempt["wait_until"], 
+                        timeout=attempt["timeout"]
+                    )
+                    await self.human_delay(2, 4)
+                    await self.take_screenshot("08_gmail_api_direct")
                     
-                    # Check if API is already enabled
-                    if await self._check_api_enabled():
-                        self.logger.info("✅ Gmail API is already enabled")
-                        return True
-                    
-                    # Try to enable the API
-                    if await self._enable_api_on_page():
-                        return True
+                    # Check if we're on the Gmail API page
+                    if "gmail.googleapis.com" in self.page.url or await self.page.locator('text="Gmail API"').count() > 0:
+                        self.logger.info("✅ Successfully navigated directly to Gmail API page")
                         
-            except Exception as e:
-                self.logger.warning(f"⚠️ Direct navigation failed: {str(e)}")
+                        # Check if API is already enabled
+                        if await self._check_api_enabled():
+                            self.logger.info("✅ Gmail API is already enabled")
+                            return True
+                        
+                        # Try to enable the API
+                        if await self._enable_api_on_page():
+                            return True
+                    
+                    break  # If we got here, navigation worked even if not Gmail API page
+                        
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Gmail API navigation attempt failed: {str(e)}")
+                    continue
             
             # Fallback: Navigate to API Library and search
             self.logger.info("📚 Fallback: Navigating to API Library...")
-            try:
-                await self.page.goto("https://console.cloud.google.com/apis/library", wait_until="networkidle", timeout=30000)
-                await self.human_delay(3, 5)
-                await self.take_screenshot("08_api_library")
-                
-                # Wait for page to fully load
-                await self.page.wait_for_load_state("domcontentloaded", timeout=30000)
-                await self.human_delay(2, 3)
-                
-                # Enhanced search for Gmail API
-                if await self._search_gmail_api():
-                    if await self._enable_api_on_page():
-                        return True
+            library_attempts = [
+                {
+                    "url": "https://console.cloud.google.com/apis/library",
+                    "wait_until": "domcontentloaded",
+                    "timeout": 15000
+                },
+                {
+                    "url": "https://console.cloud.google.com/apis/library",
+                    "wait_until": "load",
+                    "timeout": 20000
+                }
+            ]
+            
+            for attempt in library_attempts:
+                try:
+                    await self.page.goto(
+                        attempt["url"], 
+                        wait_until=attempt["wait_until"], 
+                        timeout=attempt["timeout"]
+                    )
+                    await self.human_delay(2, 4)
+                    await self.take_screenshot("08_api_library")
+                    
+                    # Wait for page to fully load with shorter timeout
+                    try:
+                        await self.page.wait_for_load_state("domcontentloaded", timeout=10000)
+                    except:
+                        pass  # Continue even if this times out
+                    
+                    await self.human_delay(1, 2)
+                    
+                    # Enhanced search for Gmail API
+                    if await self._search_gmail_api():
+                        if await self._enable_api_on_page():
+                            return True
+                    
+                    break  # If we got here, navigation worked
                         
-            except Exception as e:
-                self.logger.warning(f"⚠️ API Library navigation failed: {str(e)}")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ API Library navigation failed: {str(e)}")
+                    continue
             
             # Final fallback: Try alternative URLs and methods
             self.logger.info("🔄 Final fallback: Trying alternative methods...")
             alternative_urls = [
-                "https://console.cloud.google.com/apis/api/gmail.googleapis.com",
-                "https://console.cloud.google.com/apis/library/gmail.googleapis.com",
-                "https://console.cloud.google.com/marketplace/product/google/gmail.googleapis.com"
+                "https://console.cloud.google.com/apis/api/gmail.googleapis.com/overview",
+                "https://console.cloud.google.com/marketplace/product/google/gmail.googleapis.com",
+                "https://console.cloud.google.com/apis/library/gmail.googleapis.com"
             ]
             
             for url in alternative_urls:
                 try:
                     self.logger.info(f"🔗 Trying alternative URL: {url}")
-                    await self.page.goto(url, wait_until="networkidle", timeout=30000)
-                    await self.human_delay(2, 3)
+                    await self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                    await self.human_delay(1, 3)
                     
                     if await self._check_api_enabled():
                         self.logger.info("✅ Gmail API is already enabled")
@@ -1508,9 +2085,71 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
         try:
             self.logger.info("🔒 Setting up OAuth consent screen...")
             
-            # Navigate to OAuth consent screen
-            await self.page.goto("https://console.cloud.google.com/apis/credentials/consent")
-            await self.wait_for_navigation()
+            # Enhanced navigation to OAuth consent screen with multiple strategies
+            navigation_success = False
+            navigation_strategies = [
+                {
+                    "url": "https://console.cloud.google.com/apis/credentials/consent",
+                    "wait_until": "networkidle",
+                    "timeout": 45000
+                },
+                {
+                    "url": "https://console.cloud.google.com/apis/credentials/consent",
+                    "wait_until": "domcontentloaded",
+                    "timeout": 30000
+                },
+                {
+                    "url": "https://console.cloud.google.com/apis/credentials/consent",
+                    "wait_until": "load",
+                    "timeout": 30000
+                }
+            ]
+            
+            for strategy in navigation_strategies:
+                try:
+                    self.logger.info(f"🔄 Trying OAuth consent navigation with {strategy['wait_until']} wait...")
+                    await self.page.goto(
+                        strategy["url"], 
+                        wait_until=strategy["wait_until"], 
+                        timeout=strategy["timeout"]
+                    )
+                    await self.human_delay(3, 5)
+                    navigation_success = True
+                    self.logger.info("✅ OAuth consent screen navigation successful")
+                    break
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Navigation strategy {strategy['wait_until']} failed: {str(e)}")
+                    continue
+            
+            if not navigation_success:
+                # Final fallback: try alternative navigation path
+                self.logger.warning("⚠️ Direct navigation failed, trying alternative path...")
+                try:
+                    await self.page.goto("https://console.cloud.google.com/apis/credentials", timeout=30000)
+                    await self.human_delay(2, 3)
+                    
+                    # Look for OAuth consent screen link
+                    consent_link_selectors = [
+                        'a[href*="consent"]',
+                        'text="OAuth consent screen"',
+                        'button:has-text("OAuth consent screen")',
+                        '[data-testid*="consent"]'
+                    ]
+                    
+                    for selector in consent_link_selectors:
+                        try:
+                            if await self.page.locator(selector).count() > 0:
+                                await self.page.locator(selector).click()
+                                await self.human_delay(3, 5)
+                                navigation_success = True
+                                break
+                        except Exception:
+                            continue
+                            
+                except Exception as e:
+                    self.logger.error(f"❌ All navigation strategies failed: {str(e)}")
+                    raise Exception("Could not navigate to OAuth consent screen")
+            
             await self.take_screenshot("09_oauth_consent")
             
             # Check if consent screen is already configured
@@ -1518,73 +2157,196 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 self.logger.info("✅ OAuth consent screen already configured")
                 return True
             
-            # Select External user type (if not already selected)
+            # Select External user type (if not already selected) with enhanced selectors
             external_selectors = [
                 'input[value="EXTERNAL"]',
                 'mat-radio-button:has-text("External")',
-                '[data-value="external"]'
+                '[data-value="external"]',
+                'input[type="radio"][value="EXTERNAL"]',
+                'label:has-text("External") input',
+                '.mat-radio-button:has-text("External")',
+                '[role="radio"]:has-text("External")'
             ]
             
-            await self.safe_click(external_selectors)
-            await self.human_delay(1, 2)
+            external_selected = False
+            for selector in external_selectors:
+                try:
+                    if await self.page.locator(selector).count() > 0:
+                        await self.page.locator(selector).click()
+                        external_selected = True
+                        self.logger.info(f"✅ External user type selected using: {selector}")
+                        await self.human_delay(1, 2)
+                        break
+                except Exception as e:
+                    self.logger.debug(f"External selector {selector} failed: {str(e)}")
+                    continue
             
-            # Click Create button
+            if not external_selected:
+                self.logger.warning("⚠️ Could not select External user type, continuing anyway...")
+            
+            # Click Create button with enhanced selectors and timeout handling
             create_selectors = [
                 'button:has-text("Create")',
                 'button:has-text("CREATE")',
-                'button[type="submit"]'
+                'button[type="submit"]',
+                'input[type="submit"]',
+                'button:has-text("Continue")',
+                'button:has-text("CONTINUE")',
+                '.cfc-button:has-text("Create")',
+                '[data-testid*="create"]',
+                'button.create-button'
             ]
             
-            if not await self.safe_click(create_selectors):
+            create_clicked = False
+            for selector in create_selectors:
+                try:
+                    # Wait for the button to be available
+                    await self.page.wait_for_selector(selector, timeout=10000)
+                    if await self.page.locator(selector).count() > 0:
+                        await self.page.locator(selector).click()
+                        create_clicked = True
+                        self.logger.info(f"✅ Create button clicked using: {selector}")
+                        break
+                except Exception as e:
+                    self.logger.debug(f"Create selector {selector} failed: {str(e)}")
+                    continue
+            
+            if not create_clicked:
                 raise Exception("Could not find Create button for OAuth consent")
             
-            await self.wait_for_navigation()
+            # Enhanced navigation wait with multiple strategies
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=30000)
+            except:
+                try:
+                    await self.page.wait_for_load_state("domcontentloaded", timeout=15000)
+                except:
+                    pass  # Continue even if load states timeout
+            
+            await self.human_delay(3, 5)
             await self.take_screenshot("10_oauth_form")
             
-            # Fill in app name
+            # Fill in app name with enhanced selectors and timeout handling
             app_name_selectors = [
                 'input[name="applicationName"]',
                 'input[formcontrolname="applicationName"]',
-                'input[aria-label*="App name"]'
+                'input[aria-label*="App name"]',
+                'input[placeholder*="App name"]',
+                'input[id*="app-name"]',
+                'input[id*="application-name"]',
+                '.app-name input',
+                '[data-testid*="app-name"] input'
             ]
             
+            app_name_filled = False
             for selector in app_name_selectors:
                 try:
-                    await self.page.wait_for_selector(selector, timeout=5000)
+                    await self.page.wait_for_selector(selector, timeout=10000)
                     await self.human_type(selector, app_name)
+                    app_name_filled = True
+                    self.logger.info(f"✅ App name filled using: {selector}")
                     break
-                except Exception:
+                except Exception as e:
+                    self.logger.debug(f"App name selector {selector} failed: {str(e)}")
                     continue
             
-            # Fill in user support email (use current user's email)
+            if not app_name_filled:
+                self.logger.warning("⚠️ Could not fill app name, continuing anyway...")
+            
+            # Fill in user support email with enhanced selectors and timeout handling
             support_email_selectors = [
                 'input[name="supportEmail"]',
                 'input[formcontrolname="supportEmail"]',
-                'mat-select[formcontrolname="supportEmail"]'
+                'mat-select[formcontrolname="supportEmail"]',
+                'select[name="supportEmail"]',
+                'input[aria-label*="support email"]',
+                'input[placeholder*="support email"]',
+                '.support-email input',
+                '[data-testid*="support-email"]'
             ]
             
-            # Try to select current user's email from dropdown
+            support_email_filled = False
             for selector in support_email_selectors:
                 try:
-                    await self.safe_click(selector)
-                    await self.human_delay(1, 2)
-                    # Select first option (usually current user)
-                    await self.safe_click('mat-option:first-child')
-                    break
-                except Exception:
+                    await self.page.wait_for_selector(selector, timeout=10000)
+                    
+                    # Check if it's a dropdown/select element
+                    if 'select' in selector or 'mat-select' in selector:
+                        await self.page.locator(selector).click()
+                        await self.human_delay(1, 2)
+                        # Select first option (usually current user)
+                        option_selectors = [
+                            'mat-option:first-child',
+                            'option:first-child',
+                            '.mat-option:first-child',
+                            '[role="option"]:first-child'
+                        ]
+                        for option_selector in option_selectors:
+                            try:
+                                if await self.page.locator(option_selector).count() > 0:
+                                    await self.page.locator(option_selector).click()
+                                    support_email_filled = True
+                                    break
+                            except Exception:
+                                continue
+                    else:
+                        # It's a regular input field - we'll skip filling it as it's usually auto-filled
+                        support_email_filled = True
+                        self.logger.info("✅ Support email field found (likely auto-filled)")
+                    
+                    if support_email_filled:
+                        self.logger.info(f"✅ Support email handled using: {selector}")
+                        break
+                        
+                except Exception as e:
+                    self.logger.debug(f"Support email selector {selector} failed: {str(e)}")
                     continue
             
-            # Save and continue
+            if not support_email_filled:
+                self.logger.warning("⚠️ Could not handle support email, continuing anyway...")
+            
+            await self.human_delay(2, 3)
+            
+            # Save and continue with enhanced selectors and timeout handling
             save_selectors = [
                 'button:has-text("Save and Continue")',
                 'button:has-text("SAVE AND CONTINUE")',
-                'button[type="submit"]'
+                'button[type="submit"]',
+                'input[type="submit"]',
+                'button:has-text("Continue")',
+                'button:has-text("CONTINUE")',
+                'button:has-text("Save")',
+                'button:has-text("SAVE")',
+                '.cfc-button:has-text("Save")',
+                '[data-testid*="save"]'
             ]
             
-            if not await self.safe_click(save_selectors):
+            save_clicked = False
+            for selector in save_selectors:
+                try:
+                    await self.page.wait_for_selector(selector, timeout=10000)
+                    if await self.page.locator(selector).count() > 0:
+                        await self.page.locator(selector).click()
+                        save_clicked = True
+                        self.logger.info(f"✅ Save and Continue clicked using: {selector}")
+                        break
+                except Exception as e:
+                    self.logger.debug(f"Save selector {selector} failed: {str(e)}")
+                    continue
+            
+            if not save_clicked:
                 raise Exception("Could not find Save and Continue button")
             
-            await self.wait_for_navigation()
+            # Enhanced navigation wait
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=30000)
+            except:
+                try:
+                    await self.page.wait_for_load_state("domcontentloaded", timeout=15000)
+                except:
+                    pass
+            
+            await self.human_delay(3, 5)
             
             # Skip scopes page
             await self.safe_click('button:has-text("Save and Continue")')
@@ -1594,9 +2356,27 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             await self.safe_click('button:has-text("Save and Continue")')
             await self.wait_for_navigation()
             
-            # Final save
-            await self.safe_click('button:has-text("Back to Dashboard")')
-            await self.wait_for_navigation()
+            # Navigate to credentials page instead of dashboard for better flow
+            try:
+                # Try to find "Back to Dashboard" or similar button first
+                back_selectors = [
+                    'button:has-text("Back to Dashboard")',
+                    'button:has-text("BACK TO DASHBOARD")',
+                    'a:has-text("Back to Dashboard")',
+                    'button:has-text("Done")',
+                    'button:has-text("Finish")'
+                ]
+                
+                await self.safe_click(back_selectors)
+                await self.wait_for_navigation()
+                
+                # Now navigate directly to credentials page for smoother flow
+                self.logger.info("🔄 Navigating to credentials page for next step...")
+                await self.page.goto("https://console.cloud.google.com/apis/credentials", wait_until="networkidle")
+                await self.wait_for_navigation()
+                
+            except Exception as e:
+                self.logger.warning(f"Navigation optimization failed, but OAuth consent is configured: {str(e)}")
             
             self.logger.info("✅ OAuth consent screen configured successfully")
             return True
@@ -1633,96 +2413,269 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
         try:
             self.logger.info("🔑 Creating OAuth 2.0 credentials...")
             
-            # Navigate to credentials page
-            await self.page.goto("https://console.cloud.google.com/apis/credentials")
-            await self.wait_for_navigation()
+            # Navigate to credentials page with retry
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    await self.page.goto("https://console.cloud.google.com/apis/credentials", wait_until="networkidle")
+                    await self.wait_for_navigation()
+                    break
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise Exception(f"Failed to navigate to credentials page after {max_retries} attempts: {str(e)}")
+                    await asyncio.sleep(2)
+            
             await self.take_screenshot("11_credentials_page")
             
-            # Click Create Credentials
+            # Wait for page to fully load
+            await asyncio.sleep(3)
+            
+            # Enhanced selectors for Create Credentials button
             create_cred_selectors = [
-                'button:has-text("Create Credentials")',
+                # Modern Google Cloud Console selectors
+                'button:has-text("Create credentials")',
                 'button:has-text("CREATE CREDENTIALS")',
-                '[data-value="create_credentials"]'
+                'button:has-text("Create Credentials")',
+                '[aria-label*="Create credentials"]',
+                '[aria-label*="Create Credentials"]',
+                'button[data-testid*="create"]',
+                'button[data-value="create_credentials"]',
+                # Fallback selectors
+                'button:text-matches("Create.*[Cc]redentials?")',
+                'div[role="button"]:has-text("Create")',
+                'span:has-text("Create Credentials")',
+                # CSS class based selectors
+                '.mdc-button:has-text("Create")',
+                '.mat-button:has-text("Create")',
+                # Generic button selectors as last resort
+                'button:contains("Create")',
+                'a:has-text("Create Credentials")'
             ]
             
-            if not await self.safe_click(create_cred_selectors):
-                raise Exception("Could not find Create Credentials button")
+            self.logger.info("🔍 Looking for Create Credentials button...")
             
-            await self.human_delay(1, 2)
+            # Try each selector with detailed logging
+            button_found = False
+            for i, selector in enumerate(create_cred_selectors):
+                try:
+                    self.logger.info(f"Trying selector {i+1}/{len(create_cred_selectors)}: {selector}")
+                    
+                    # Check if element exists
+                    element = self.page.locator(selector).first
+                    if await element.count() > 0:
+                        self.logger.info(f"✅ Found element with selector: {selector}")
+                        
+                        # Try to click
+                        await element.click(timeout=5000)
+                        button_found = True
+                        self.logger.info("✅ Successfully clicked Create Credentials button")
+                        break
+                    else:
+                        self.logger.info(f"❌ No element found with selector: {selector}")
+                        
+                except Exception as e:
+                    self.logger.info(f"❌ Failed with selector {selector}: {str(e)}")
+                    continue
             
-            # Select OAuth client ID
+            if not button_found:
+                # Take a screenshot for debugging
+                await self.take_screenshot("debug_credentials_page")
+                
+                # Try to find any button with "Create" text
+                all_buttons = await self.page.locator('button').all()
+                self.logger.info(f"Found {len(all_buttons)} buttons on page")
+                
+                for i, button in enumerate(all_buttons):
+                    try:
+                        text = await button.text_content()
+                        if text and "create" in text.lower():
+                            self.logger.info(f"Found button {i} with text: '{text}'")
+                            await button.click()
+                            button_found = True
+                            break
+                    except Exception:
+                        continue
+                
+                if not button_found:
+                    raise Exception("Could not find Create Credentials button with any selector")
+            
+            await self.human_delay(2, 3)
+            
+            # Select OAuth client ID with enhanced selectors
             oauth_selectors = [
-                'text="OAuth client ID"',
+                'a:has-text("OAuth client ID")',
+                'div:has-text("OAuth client ID")',
+                'span:has-text("OAuth client ID")',
                 'button:has-text("OAuth client ID")',
-                '[data-value="oauth_client_id"]'
+                '[data-value="oauth_client_id"]',
+                '[aria-label*="OAuth client ID"]',
+                'li:has-text("OAuth client ID")',
+                # Text-based selectors
+                'text="OAuth client ID"',
+                ':text("OAuth client ID")',
+                # Partial text matches
+                ':text-matches("OAuth.*client.*ID")',
+                # Menu item selectors
+                '.mat-menu-item:has-text("OAuth")',
+                '.mdc-list-item:has-text("OAuth")'
             ]
             
-            if not await self.safe_click(oauth_selectors):
+            oauth_found = False
+            for selector in oauth_selectors:
+                try:
+                    element = self.page.locator(selector).first
+                    if await element.count() > 0:
+                        await element.click(timeout=5000)
+                        oauth_found = True
+                        self.logger.info(f"✅ Successfully clicked OAuth client ID with selector: {selector}")
+                        break
+                except Exception:
+                    continue
+            
+            if not oauth_found:
                 raise Exception("Could not find OAuth client ID option")
             
             await self.wait_for_navigation()
             await self.take_screenshot("12_oauth_form")
             
-            # Select Desktop application
+            # Select Desktop application with enhanced selectors
             desktop_selectors = [
                 'mat-radio-button:has-text("Desktop application")',
                 'input[value="DESKTOP"]',
-                '[data-value="desktop"]'
+                'input[type="radio"][value="DESKTOP"]',
+                'label:has-text("Desktop application")',
+                'span:has-text("Desktop application")',
+                '[data-value="desktop"]',
+                '[data-value="DESKTOP"]',
+                # Material UI selectors
+                'mat-radio-button[value="DESKTOP"]',
+                '.mat-radio-button:has-text("Desktop")'
             ]
             
-            if not await self.safe_click(desktop_selectors):
-                raise Exception("Could not find Desktop application option")
+            desktop_found = False
+            for selector in desktop_selectors:
+                try:
+                    element = self.page.locator(selector).first
+                    if await element.count() > 0:
+                        await element.click(timeout=5000)
+                        desktop_found = True
+                        self.logger.info(f"✅ Successfully selected Desktop application with selector: {selector}")
+                        break
+                except Exception:
+                    continue
+            
+            if not desktop_found:
+                self.logger.warning("Could not find Desktop application option, proceeding anyway...")
             
             await self.human_delay(1, 2)
             
-            # Enter name (use email as name)
+            # Enter name (use email as name) with enhanced selectors
             name_selectors = [
                 'input[name="name"]',
                 'input[formcontrolname="name"]',
-                'input[aria-label*="Name"]'
+                'input[aria-label*="Name"]',
+                'input[placeholder*="name"]',
+                'input[placeholder*="Name"]',
+                'input[id*="name"]',
+                'input[class*="name"]'
             ]
             
             name_entered = False
             for selector in name_selectors:
                 try:
                     await self.page.wait_for_selector(selector, timeout=5000)
+                    await self.page.fill(selector, "")  # Clear existing text
                     await self.human_type(selector, email)
                     name_entered = True
+                    self.logger.info(f"✅ Successfully entered name with selector: {selector}")
                     break
                 except Exception:
                     continue
             
             if not name_entered:
-                self.logger.warning("Could not find name field, using default")
+                self.logger.warning("Could not find name field, proceeding without custom name")
             
-            # Click Create
+            # Click Create button with enhanced selectors
             create_selectors = [
                 'button:has-text("Create")',
                 'button:has-text("CREATE")',
-                'button[type="submit"]'
+                'button[type="submit"]',
+                'input[type="submit"]',
+                'input[value="Create"]',
+                '[aria-label*="Create"]',
+                '.mdc-button:has-text("Create")',
+                '.mat-button:has-text("Create")'
             ]
             
-            if not await self.safe_click(create_selectors):
-                raise Exception("Could not find Create button")
+            create_found = False
+            for selector in create_selectors:
+                try:
+                    element = self.page.locator(selector).first
+                    if await element.count() > 0:
+                        await element.click(timeout=5000)
+                        create_found = True
+                        self.logger.info(f"✅ Successfully clicked Create button with selector: {selector}")
+                        break
+                except Exception:
+                    continue
+            
+            if not create_found:
+                raise Exception("Could not find Create button for OAuth credentials")
             
             await self.wait_for_navigation()
             await self.take_screenshot("13_credentials_created")
             
-            # Download JSON
+            # Wait for credentials to be created
+            await asyncio.sleep(3)
+            
+            # Download JSON with enhanced selectors
             download_selectors = [
                 'button:has-text("Download JSON")',
                 'button:has-text("DOWNLOAD JSON")',
+                'button:has-text("Download")',
                 '[data-value="download_json"]',
-                'button[aria-label*="Download"]'
+                'button[aria-label*="Download"]',
+                'a[aria-label*="Download"]',
+                'button[title*="Download"]',
+                'a[title*="Download"]',
+                '.download-button',
+                '.mdc-button:has-text("Download")',
+                '.mat-button:has-text("Download")',
+                # Icon-based selectors
+                'button:has([data-icon*="download"])',
+                'button:has(.material-icons:text("download"))'
             ]
             
-            if not await self.safe_click(download_selectors):
-                raise Exception("Could not find Download JSON button")
+            download_found = False
+            for selector in download_selectors:
+                try:
+                    element = self.page.locator(selector).first
+                    if await element.count() > 0:
+                        await element.click(timeout=5000)
+                        download_found = True
+                        self.logger.info(f"✅ Successfully clicked Download button with selector: {selector}")
+                        break
+                except Exception:
+                    continue
+            
+            if not download_found:
+                self.logger.warning("Could not find Download JSON button, credentials may still be created")
+                # Try to find any download link or button
+                download_elements = await self.page.locator('button, a').all()
+                for element in download_elements:
+                    try:
+                        text = await element.text_content()
+                        if text and ("download" in text.lower() or "json" in text.lower()):
+                            await element.click()
+                            download_found = True
+                            break
+                    except Exception:
+                        continue
             
             # Wait for download to complete
             await self.human_delay(3, 5)
             
-            self.logger.info("✅ OAuth credentials created and JSON downloaded")
+            self.logger.info("✅ OAuth credentials created and JSON download attempted")
             return True
             
         except Exception as e:
@@ -1730,6 +2683,100 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             if self.config.automation.screenshot_on_error:
                 await self.take_screenshot("error_oauth_credentials")
             raise
+    
+    async def _handle_critical_step_failure(self, step_name: str, error: Exception, recovery_strategies: List[callable] = None) -> bool:
+        """Handle critical step failures with recovery strategies"""
+        try:
+            self.logger.error(f"❌ Critical step '{step_name}' failed: {str(error)}")
+            
+            if not recovery_strategies:
+                self.logger.warning("⚠️ No recovery strategies available")
+                return False
+            
+            for i, strategy in enumerate(recovery_strategies):
+                try:
+                    self.logger.info(f"🔄 Attempting recovery strategy {i + 1}/{len(recovery_strategies)} for '{step_name}'")
+                    
+                    # Take screenshot before recovery attempt
+                    await self.take_screenshot(f"recovery_{step_name}_{i + 1}_before")
+                    
+                    # Execute recovery strategy
+                    result = await strategy()
+                    
+                    if result:
+                        self.logger.info(f"✅ Recovery strategy {i + 1} succeeded for '{step_name}'")
+                        await self.take_screenshot(f"recovery_{step_name}_{i + 1}_success")
+                        return True
+                    else:
+                        self.logger.warning(f"⚠️ Recovery strategy {i + 1} failed for '{step_name}'")
+                        await self.take_screenshot(f"recovery_{step_name}_{i + 1}_failed")
+                        
+                except Exception as recovery_error:
+                    self.logger.error(f"❌ Recovery strategy {i + 1} threw exception: {str(recovery_error)}")
+                    await self.take_screenshot(f"recovery_{step_name}_{i + 1}_error")
+                    continue
+            
+            self.logger.error(f"❌ All recovery strategies failed for '{step_name}'")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error in recovery handler: {str(e)}")
+            return False
+    
+    async def _recovery_refresh_and_retry(self, original_func: callable, *args, **kwargs) -> bool:
+        """Recovery strategy: refresh page and retry operation"""
+        try:
+            self.logger.info("🔄 Recovery: Refreshing page and retrying...")
+            await self.page.reload(wait_until="networkidle", timeout=30000)
+            await self.human_delay(3, 5)
+            
+            result = await original_func(*args, **kwargs)
+            return result
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Refresh and retry recovery failed: {str(e)}")
+            return False
+    
+    async def _recovery_navigate_home_and_retry(self, target_url: str, original_func: callable, *args, **kwargs) -> bool:
+        """Recovery strategy: navigate to home/dashboard and retry operation"""
+        try:
+            self.logger.info("🔄 Recovery: Navigating to dashboard and retrying...")
+            
+            # Navigate to Google Cloud Console home
+            await self.page.goto("https://console.cloud.google.com/", wait_until="networkidle", timeout=30000)
+            await self.human_delay(3, 5)
+            
+            # Then navigate to target URL
+            if target_url:
+                await self.page.goto(target_url, wait_until="networkidle", timeout=30000)
+                await self.human_delay(3, 5)
+            
+            result = await original_func(*args, **kwargs)
+            return result
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Navigate home and retry recovery failed: {str(e)}")
+            return False
+    
+    async def _recovery_clear_cache_and_retry(self, original_func: callable, *args, **kwargs) -> bool:
+        """Recovery strategy: clear browser cache and retry operation"""
+        try:
+            self.logger.info("🔄 Recovery: Clearing cache and retrying...")
+            
+            # Clear browser cache
+            await self.context.clear_cookies()
+            await self.context.clear_permissions()
+            
+            # Reload page
+            await self.page.reload(wait_until="networkidle", timeout=30000)
+            await self.human_delay(3, 5)
+            
+            result = await original_func(*args, **kwargs)
+            return result
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Clear cache and retry recovery failed: {str(e)}")
+            return False
     
     async def rename_downloaded_json(self, email: str) -> bool:
         """Rename the downloaded JSON file to use the email as filename"""

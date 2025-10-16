@@ -7,6 +7,7 @@ Core automation engine with stealth mode and anti-detection features
 
 import asyncio
 import random
+import string
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union

@@ -304,9 +304,9 @@ class OAuthCredentialsManager(GoogleCloudAutomation):
                 result['errors'].append(f"Browser initialization failed: {str(e)}")
                 raise
             
-            # Generate project name if not provided
+            # Generate project name if not provided (use unified generator)
             if not project_name:
-                project_name = self._generate_project_name(email)
+                project_name = self.generate_project_name(email)
             
             self.current_project_id = project_name
             
