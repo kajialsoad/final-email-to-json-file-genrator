@@ -46,6 +46,13 @@ class PlaywrightAutomationEngine:
         self.page: Optional[Page] = None
         self.playwright = None
         self.session_id = str(uuid.uuid4())[:8]
+        self._browser_connected = False
+        self._reconnection_attempts = 0
+        self._max_reconnection_attempts = 3
+        self._last_heartbeat = None
+        self._heartbeat_interval = 30  # Check every 30 seconds
+        self._stability_monitor_task = None
+        self._monitor_running = False
         
         # Create directories
         self.screenshots_dir = Path(self.config.paths.screenshots_dir)
@@ -67,41 +74,132 @@ class PlaywrightAutomationEngine:
             # Get browser configuration
             browser_args = self.config.get_browser_args()
             
-            # Launch browser
-            self.browser = await self.playwright.chromium.launch(**browser_args)
-            
-            # Create context with stealth settings and UI stability
-            context_options = {
-                'viewport': {
-                    'width': self.config.browser.viewport_width,
-                    'height': self.config.browser.viewport_height
-                },
-                'user_agent': self.config.browser.user_agent,
-                'locale': 'en-US',
-                'timezone_id': 'America/New_York',
-                'permissions': ['geolocation'],
-                'device_scale_factor': self.config.browser.force_device_scale_factor,
-                'is_mobile': False,
-                'has_touch': False,
-                'color_scheme': 'light',
-                'reduced_motion': 'reduce' if self.config.browser.disable_animations else 'no-preference',
-                'forced_colors': 'none',
-                'extra_http_headers': {
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1',
-                    'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache'
+            # Check if persistent context is enabled
+            if self.config.browser.use_persistent_context:
+                # Use persistent context for session persistence
+                user_data_path = Path(self.config.browser.user_data_dir).absolute()
+                user_data_path.mkdir(exist_ok=True)
+                
+                # Prepare context options for persistent context
+                persistent_context_options = {
+                    'viewport': {
+                        'width': self.config.browser.viewport_width,
+                        'height': self.config.browser.viewport_height
+                    },
+                    'user_agent': self.config.browser.user_agent,
+                    'locale': 'en-US',
+                    'timezone_id': 'America/New_York',
+                    'permissions': ['geolocation'],
+                    'device_scale_factor': self.config.browser.force_device_scale_factor,
+                    'is_mobile': False,
+                    'has_touch': False,
+                    'color_scheme': 'light',
+                    'reduced_motion': 'reduce' if self.config.browser.disable_animations else 'no-preference',
+                    'forced_colors': 'none',
+                    'extra_http_headers': {
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1',
+                        'Cache-Control': 'no-cache',
+                        'Pragma': 'no-cache'
+                    }
                 }
-            }
+                
+                # Add download path
+                if not self.config.browser.headless:
+                    persistent_context_options['accept_downloads'] = True
+                
+                # Merge browser args with context options
+                launch_options = {**browser_args, **persistent_context_options}
+                
+                # Launch persistent context based on configuration
+                browser_type = self.config.browser.browser_type.lower()
+                if browser_type == "chrome":
+                    # Use Chrome instead of Chromium for better stability
+                    self.context = await self.playwright.chromium.launch_persistent_context(
+                        user_data_dir=str(user_data_path),
+                        channel="chrome",
+                        **launch_options
+                    )
+                elif browser_type == "chromium":
+                    self.context = await self.playwright.chromium.launch_persistent_context(
+                        user_data_dir=str(user_data_path),
+                        **launch_options
+                    )
+                elif browser_type == "firefox":
+                    self.context = await self.playwright.firefox.launch_persistent_context(
+                        user_data_dir=str(user_data_path),
+                        **launch_options
+                    )
+                elif browser_type == "webkit":
+                    self.context = await self.playwright.webkit.launch_persistent_context(
+                        user_data_dir=str(user_data_path),
+                        **launch_options
+                    )
+                else:
+                    # Default to Chrome for best compatibility
+                    self.logger.warning(f"Unknown browser type '{browser_type}', defaulting to Chrome")
+                    self.context = await self.playwright.chromium.launch_persistent_context(
+                        user_data_dir=str(user_data_path),
+                        channel="chrome",
+                        **launch_options
+                    )
+                
+                # For persistent context, browser is accessed through context.browser
+                self.browser = self.context.browser
+                
+            else:
+                # Use regular browser launch for non-persistent context
+                browser_type = self.config.browser.browser_type.lower()
+                if browser_type == "chrome":
+                    # Use Chrome instead of Chromium for better stability
+                    self.browser = await self.playwright.chromium.launch(channel="chrome", **browser_args)
+                elif browser_type == "chromium":
+                    self.browser = await self.playwright.chromium.launch(**browser_args)
+                elif browser_type == "firefox":
+                    self.browser = await self.playwright.firefox.launch(**browser_args)
+                elif browser_type == "webkit":
+                    self.browser = await self.playwright.webkit.launch(**browser_args)
+                else:
+                    # Default to Chrome for best compatibility
+                    self.logger.warning(f"Unknown browser type '{browser_type}', defaulting to Chrome")
+                    self.browser = await self.playwright.chromium.launch(channel="chrome", **browser_args)
             
-            # Add download path
-            if not self.config.browser.headless:
-                context_options['accept_downloads'] = True
-            
-            self.context = await self.browser.new_context(**context_options)
+            # Create context with stealth settings and UI stability (only for non-persistent context)
+            if not self.config.browser.use_persistent_context:
+                context_options = {
+                    'viewport': {
+                        'width': self.config.browser.viewport_width,
+                        'height': self.config.browser.viewport_height
+                    },
+                    'user_agent': self.config.browser.user_agent,
+                    'locale': 'en-US',
+                    'timezone_id': 'America/New_York',
+                    'permissions': ['geolocation'],
+                    'device_scale_factor': self.config.browser.force_device_scale_factor,
+                    'is_mobile': False,
+                    'has_touch': False,
+                    'color_scheme': 'light',
+                    'reduced_motion': 'reduce' if self.config.browser.disable_animations else 'no-preference',
+                    'forced_colors': 'none',
+                    'extra_http_headers': {
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1',
+                        'Cache-Control': 'no-cache',
+                        'Pragma': 'no-cache'
+                    }
+                }
+                
+                # Add download path
+                if not self.config.browser.headless:
+                    context_options['accept_downloads'] = True
+                
+                self.context = await self.browser.new_context(**context_options)
             
             # Apply stealth mode
             if self.config.browser.stealth_mode and HAS_STEALTH:
@@ -123,11 +221,33 @@ class PlaywrightAutomationEngine:
             # Add additional stealth measures
             await self._apply_stealth_measures()
             
-            self.logger.info("✅ Browser initialized successfully")
-            return True
+            # Verify browser is actually working before declaring success
+            try:
+                # Test basic browser functionality
+                test_url = "about:blank"
+                await self.page.goto(test_url, timeout=10000)
+                await asyncio.sleep(1)  # Give it a moment to stabilize
+                
+                self.logger.info("✅ Browser initialized successfully")
+                self._browser_connected = True
+                self._reconnection_attempts = 0
+                
+                # Add browser disconnection handlers
+                await self._setup_disconnection_handlers()
+                
+                # Start stability monitor with delay
+                await self._start_stability_monitor()
+                
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"❌ Browser initialization test failed: {e}")
+                await self._cleanup_disconnected_resources()
+                raise
             
         except Exception as e:
             log_error(e, "browser_initialization")
+            self._browser_connected = False
             raise
     
     async def _apply_ui_stability_settings(self):
@@ -231,6 +351,258 @@ class PlaywrightAutomationEngine:
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to apply some stealth measures: {str(e)}")
     
+    async def _setup_disconnection_handlers(self):
+        """Setup handlers for browser disconnection events"""
+        try:
+            if self.browser:
+                self.browser.on("disconnected", self._on_browser_disconnected)
+            
+            if self.context:
+                self.context.on("close", self._on_context_closed)
+                
+            if self.page:
+                self.page.on("close", self._on_page_closed)
+                
+        except Exception as e:
+            log_error(e, "_setup_disconnection_handlers")
+    
+    def _on_browser_disconnected(self):
+        """Handle browser disconnection"""
+        self.logger.warning("🔌 Browser disconnected")
+        self._browser_connected = False
+    
+    def _on_context_closed(self):
+        """Handle context closure"""
+        self.logger.warning("🔗 Browser context closed")
+        self._browser_connected = False
+    
+    def _on_page_closed(self):
+        """Handle page closure"""
+        self.logger.warning("📄 Page closed")
+        self._browser_connected = False
+    
+    async def _check_browser_connection(self) -> bool:
+        """Check if browser is still connected and functional"""
+        try:
+            if not self._browser_connected:
+                return False
+                
+            if not self.browser or not self.context or not self.page:
+                self._browser_connected = False
+                return False
+            
+            # More robust connection test - try multiple checks
+            try:
+                # Check if browser is connected
+                if self.browser and hasattr(self.browser, 'is_connected'):
+                    if not self.browser.is_connected():
+                        self._browser_connected = False
+                        return False
+                
+                # Check if page is accessible
+                if self.page:
+                    # Try a simple property access that doesn't require network
+                    _ = self.page.viewport_size
+                    return True
+                else:
+                    self._browser_connected = False
+                    return False
+                    
+            except Exception as e:
+                # Only log if it's not a common disconnection error
+                if "Target page, context or browser has been closed" not in str(e):
+                    self.logger.debug(f"Browser connection check failed: {e}")
+                self._browser_connected = False
+                return False
+                
+        except Exception as e:
+            log_error(e, "_check_browser_connection")
+            self._browser_connected = False
+            return False
+    
+    async def _heartbeat_check(self) -> bool:
+        """Perform periodic heartbeat check to ensure browser is alive"""
+        try:
+            current_time = time.time()
+            
+            # Check if it's time for a heartbeat
+            if (self._last_heartbeat is None or 
+                current_time - self._last_heartbeat >= self._heartbeat_interval):
+                
+                self.logger.debug("🫀 Performing browser heartbeat check...")
+                
+                # Give browser some time to stabilize after initialization
+                if self._last_heartbeat is None:
+                    # First heartbeat - be more lenient
+                    await asyncio.sleep(2)
+                
+                if await self._check_browser_connection():
+                    self._last_heartbeat = current_time
+                    return True
+                else:
+                    # Double-check before declaring failure
+                    await asyncio.sleep(1)
+                    if await self._check_browser_connection():
+                        self._last_heartbeat = current_time
+                        return True
+                    else:
+                        self.logger.warning("💔 Browser heartbeat failed - connection lost")
+                        return False
+            
+            return True
+            
+        except Exception as e:
+            log_error(e, "_heartbeat_check")
+            return False
+    
+    async def _ensure_browser_connection(self) -> bool:
+        """Ensure browser is connected, reconnect if necessary"""
+        try:
+            # Perform heartbeat check first (but don't be too aggressive)
+            if self._browser_connected and await self._check_browser_connection():
+                return True
+            
+            if self._reconnection_attempts >= self._max_reconnection_attempts:
+                self.logger.error(f"❌ Max reconnection attempts ({self._max_reconnection_attempts}) reached")
+                return False
+            
+            self.logger.warning(f"🔄 Browser disconnected, attempting reconnection (attempt {self._reconnection_attempts + 1})")
+            self._reconnection_attempts += 1
+            
+            # Stop stability monitor during reconnection
+            await self._stop_stability_monitor()
+            
+            # Clean up existing resources
+            await self._cleanup_disconnected_resources()
+            
+            # Wait before reconnection (exponential backoff)
+            wait_time = min(2 ** self._reconnection_attempts, 10)
+            await asyncio.sleep(wait_time)
+            
+            # Reinitialize browser
+            success = await self.initialize_browser()
+            
+            if success:
+                self.logger.info("✅ Browser reconnection successful")
+                # Reset reconnection attempts on success
+                self._reconnection_attempts = 0
+            else:
+                self.logger.error("❌ Browser reconnection failed")
+            
+            return success
+            
+        except Exception as e:
+            log_error(e, "_ensure_browser_connection")
+            return False
+    
+    async def _cleanup_disconnected_resources(self):
+        """Clean up disconnected browser resources"""
+        try:
+            self.logger.debug("🧹 Cleaning up disconnected browser resources...")
+            
+            # Mark as disconnected
+            self._browser_connected = False
+            
+            # Try to close resources gracefully, but don't fail if they're already closed
+            if self.page:
+                try:
+                    if not self.page.is_closed():
+                        await self.page.close()
+                except:
+                    pass
+                self.page = None
+            
+            if self.context:
+                try:
+                    await self.context.close()
+                except:
+                    pass
+                self.context = None
+            
+            if self.browser:
+                try:
+                    if self.browser.is_connected():
+                        await self.browser.close()
+                except:
+                    pass
+                self.browser = None
+            
+            if self.playwright:
+                try:
+                    await self.playwright.stop()
+                except:
+                    pass
+                self.playwright = None
+            
+            # Reset heartbeat
+            self._last_heartbeat = None
+            
+            self.logger.debug("✅ Browser resources cleaned up")
+                
+        except Exception as e:
+            log_error(e, "_cleanup_disconnected_resources")
+    
+    async def _start_stability_monitor(self):
+        """Start background stability monitoring"""
+        if self._monitor_running:
+            return
+            
+        self._monitor_running = True
+        self._stability_monitor_task = asyncio.create_task(self._stability_monitor_loop())
+        self.logger.info("🔍 Started browser stability monitor")
+    
+    async def _stop_stability_monitor(self):
+        """Stop background stability monitoring"""
+        self._monitor_running = False
+        if self._stability_monitor_task:
+            self._stability_monitor_task.cancel()
+            try:
+                await self._stability_monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._stability_monitor_task = None
+        self.logger.info("🛑 Stopped browser stability monitor")
+    
+    async def _stability_monitor_loop(self):
+        """Background loop to monitor browser stability"""
+        try:
+            # Give browser time to fully initialize before monitoring
+            await asyncio.sleep(5)
+            
+            while self._monitor_running:
+                try:
+                    # Only check if we think we're connected
+                    if self._browser_connected:
+                        # Use heartbeat check instead of direct connection check
+                        if not await self._heartbeat_check():
+                            self.logger.warning("🚨 Stability monitor detected browser disconnection")
+                            self._browser_connected = False
+                            
+                            # Attempt automatic recovery only if we haven't exceeded attempts
+                            if self._reconnection_attempts < self._max_reconnection_attempts:
+                                self.logger.info("🔄 Attempting automatic browser recovery...")
+                                if await self._ensure_browser_connection():
+                                    self.logger.info("✅ Browser automatically recovered")
+                                else:
+                                    self.logger.error("❌ Automatic browser recovery failed")
+                            else:
+                                self.logger.error("❌ Max reconnection attempts reached, stopping recovery")
+                                break
+                    
+                    # Wait before next check (longer interval for stability)
+                    await asyncio.sleep(self._heartbeat_interval)
+                    
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    log_error(e, "_stability_monitor_loop")
+                    await asyncio.sleep(10)  # Wait longer before retrying on error
+                    
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self.logger.debug("🔍 Stability monitor loop ended")
+    
     async def human_delay(self, min_delay: float = None, max_delay: float = None):
         """Add human-like delay"""
         min_delay = min_delay or self.config.automation.human_delay_min
@@ -265,6 +637,11 @@ class PlaywrightAutomationEngine:
     
     async def safe_click(self, selector: str, timeout: int = 10000) -> bool:
         """Safely click an element with multiple attempts"""
+        # Check browser connection first
+        if not await self._ensure_browser_connection():
+            self.logger.error("❌ Browser not connected for safe_click")
+            return False
+            
         selectors = [selector] if isinstance(selector, str) else selector
         
         for sel in selectors:
@@ -284,6 +661,13 @@ class PlaywrightAutomationEngine:
                 
             except Exception as e:
                 self.logger.debug(f"Click attempt failed for {sel}: {str(e)}")
+                # Check if it's a browser disconnection error
+                if "Target page, context or browser has been closed" in str(e):
+                    self._browser_connected = False
+                    if await self._ensure_browser_connection():
+                        continue  # Retry with reconnected browser
+                    else:
+                        return False
                 continue
         
         return False
@@ -291,19 +675,62 @@ class PlaywrightAutomationEngine:
     async def wait_for_navigation(self, timeout: int = 30000) -> bool:
         """Wait for page navigation to complete"""
         try:
+            # Check browser connection first
+            if not await self._ensure_browser_connection():
+                self.logger.error("❌ Browser not connected for wait_for_navigation")
+                return False
+                
             await self.page.wait_for_load_state('networkidle', timeout=timeout)
             await self.human_delay(1, 2)
             return True
         except Exception as e:
+            # Check if it's a browser disconnection error
+            if "Target page, context or browser has been closed" in str(e):
+                self._browser_connected = False
+                if await self._ensure_browser_connection():
+                    # Retry once with reconnected browser
+                    try:
+                        await self.page.wait_for_load_state('networkidle', timeout=timeout)
+                        await self.human_delay(1, 2)
+                        return True
+                    except:
+                        pass
             log_error(e, "wait_for_navigation")
+            return False
+    
+    async def safe_goto(self, url: str, timeout: int = 30000) -> bool:
+        """Safely navigate to a URL with browser connection check"""
+        try:
+            # Check browser connection first
+            if not await self._ensure_browser_connection():
+                self.logger.error("❌ Browser not connected for safe_goto")
+                return False
+            
+            await self.page.goto(url, timeout=timeout)
+            await self.human_delay(1, 2)
+            return True
+            
+        except Exception as e:
+            # Check if it's a browser disconnection error
+            if "Target page, context or browser has been closed" in str(e):
+                self._browser_connected = False
+                if await self._ensure_browser_connection():
+                    # Retry once with reconnected browser
+                    try:
+                        await self.page.goto(url, timeout=timeout)
+                        await self.human_delay(1, 2)
+                        return True
+                    except:
+                        pass
+            log_error(e, f"safe_goto: {url}")
             return False
     
     async def take_screenshot(self, name: str = None, full_page: bool = False) -> str:
         """Take screenshot for debugging"""
         try:
-            # Check if page is initialized
-            if self.page is None:
-                self.logger.warning("⚠️ Cannot take screenshot - page is None (browser not initialized)")
+            # Check browser connection first
+            if not await self._check_browser_connection():
+                self.logger.warning("⚠️ Cannot take screenshot - browser not connected")
                 return ""
             
             if not name:
@@ -325,7 +752,12 @@ class PlaywrightAutomationEngine:
             return str(screenshot_path)
             
         except Exception as e:
-            log_error(e, "take_screenshot")
+            # Check if it's a browser disconnection error
+            if "Target page, context or browser has been closed" in str(e):
+                self._browser_connected = False
+                self.logger.warning("⚠️ Screenshot failed due to browser disconnection")
+            else:
+                log_error(e, "take_screenshot")
             return ""
     
     async def execute_with_retry(self, func, *args, max_retries: int = None, **kwargs) -> Any:
@@ -335,9 +767,21 @@ class PlaywrightAutomationEngine:
         
         for attempt in range(max_retries):
             try:
+                # Check browser connection before each attempt
+                if not await self._check_browser_connection():
+                    self.logger.warning(f"⚠️ Browser not connected on retry attempt {attempt + 1}")
+                    if not await self._ensure_browser_connection():
+                        raise Exception("Failed to reconnect browser")
+                
                 return await func(*args, **kwargs)
             except Exception as e:
                 last_error = e
+                
+                # Check if it's a browser disconnection error
+                if "Target page, context or browser has been closed" in str(e):
+                    self._browser_connected = False
+                    self.logger.warning(f"🔌 Browser disconnected on attempt {attempt + 1}")
+                
                 if attempt < max_retries - 1:
                     delay = self.config.automation.retry_delay * (2 ** attempt)
                     self.logger.warning(f"🔄 Retry {attempt + 1}/{max_retries} in {delay}s")
@@ -876,14 +1320,24 @@ class PlaywrightAutomationEngine:
     async def cleanup(self):
         """Clean up browser resources"""
         try:
+            # Stop stability monitor first
+            await self._stop_stability_monitor()
+            
+            # Mark browser as disconnected
+            self._browser_connected = False
+            
             if self.page:
                 await self.page.close()
+                self.page = None
             if self.context:
                 await self.context.close()
+                self.context = None
             if self.browser:
                 await self.browser.close()
+                self.browser = None
             if self.playwright:
                 await self.playwright.stop()
+                self.playwright = None
             
             self.logger.info("🧹 Browser cleanup completed")
             

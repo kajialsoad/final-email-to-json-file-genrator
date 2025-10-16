@@ -15,13 +15,16 @@ from datetime import datetime
 @dataclass
 class BrowserConfig:
     """Browser configuration settings"""
+    browser_type: str = "chrome"  # chrome, chromium, firefox, webkit
     headless: bool = False
     stealth_mode: bool = True
+    use_persistent_context: bool = True  # Enable persistent browser context for session persistence
+    user_data_dir: str = "browser_data"  # Directory for browser user data
     user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     viewport_width: int = 1366
     viewport_height: int = 768
-    timeout: int = 30000  # 30 seconds
-    navigation_timeout: int = 60000  # 60 seconds
+    timeout: int = 45000  # 45 seconds (increased for Chrome stability)
+    navigation_timeout: int = 90000  # 90 seconds (increased for Chrome stability)
     slow_mo: int = 50  # Reduced for better performance
     window_position_x: int = 100  # Fixed window position
     window_position_y: int = 100  # Fixed window position
@@ -171,7 +174,7 @@ class ConfigManager:
         """Get browser launch arguments"""
         args = []
         
-        # Basic arguments
+        # Basic arguments for Chrome stability
         args.extend([
             '--no-sandbox',
             '--disable-blink-features=AutomationControlled',
@@ -181,15 +184,8 @@ class ConfigManager:
             '--disable-default-apps',
             '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding'
-        ])
-        
-        # UI Stability arguments
-        args.extend([
-            '--disable-smooth-scrolling',  # Prevent smooth scrolling that can cause UI jumps
-            '--disable-animations',  # Disable CSS animations
-            '--disable-transitions',  # Disable CSS transitions
-            '--disable-web-security',  # For better automation compatibility
+            '--disable-renderer-backgrounding',
+            '--disable-features=VizDisplayCompositor',  # Better Chrome stability
             '--disable-features=TranslateUI',  # Disable translate popup
             '--disable-ipc-flooding-protection',  # Better automation performance
             '--disable-hang-monitor',  # Prevent hang detection
@@ -198,7 +194,6 @@ class ConfigManager:
             '--disable-component-extensions-with-background-pages',  # Disable background extensions
             '--disable-client-side-phishing-detection',  # Disable phishing detection
             '--disable-sync',  # Disable Chrome sync
-            '--disable-default-apps',  # Disable default apps
             '--disable-popup-blocking',  # Allow popups for OAuth flow
             '--disable-translate',  # Disable translate feature
             '--no-first-run',  # Skip first run experience
@@ -206,6 +201,55 @@ class ConfigManager:
             '--disable-infobars',  # Disable info bars
             '--disable-notifications',  # Disable notifications
             '--disable-save-password-bubble',  # Disable save password prompts
+            '--disable-password-generation',  # Disable password generation
+            '--disable-autofill',  # Disable autofill for cleaner automation
+            '--disable-web-security',  # For better automation compatibility
+            '--allow-running-insecure-content',  # Allow mixed content
+            '--ignore-certificate-errors',  # Ignore SSL certificate errors
+            '--ignore-ssl-errors',  # Ignore SSL errors
+            '--ignore-certificate-errors-spki-list',  # Ignore certificate errors
+            '--ignore-certificate-errors-skip-list',  # Skip certificate error list
+            # Additional stability flags for browser disconnection prevention
+            '--disable-features=VizDisplayCompositor,VizHitTestSurfaceLayer',  # Better display stability
+            '--disable-gpu-process-crash-limit',  # Prevent GPU process crashes
+            '--disable-crash-reporter',  # Disable crash reporting
+            '--disable-breakpad',  # Disable crash handling
+            '--disable-logging',  # Reduce logging overhead
+            '--disable-gpu-watchdog',  # Disable GPU watchdog
+            '--disable-software-rasterizer',  # Use hardware acceleration
+            '--enable-gpu-rasterization',  # Better rendering performance
+            '--disable-background-networking',  # Prevent background network requests
+            '--disable-background-timer-throttling',  # Prevent timer throttling
+            '--disable-renderer-backgrounding',  # Keep renderer active
+            '--disable-backgrounding-occluded-windows',  # Keep windows active
+            '--disable-field-trial-config',  # Disable field trials
+            '--disable-back-forward-cache',  # Disable back/forward cache
+            '--disable-ipc-flooding-protection',  # Better IPC performance
+            '--max_old_space_size=4096',  # Increase memory limit
+            '--disable-features=VizDisplayCompositor',  # Better compositing
+        ])
+        
+        # Session persistence arguments (prevent incognito-like behavior)
+        if self.browser.use_persistent_context:
+            args.extend([
+                '--enable-local-storage',  # Enable local storage
+                '--enable-session-storage',  # Enable session storage
+                '--disable-features=VizDisplayCompositor',  # Better session handling
+            ])
+        
+        # UI Stability arguments (additional Chrome-specific)
+        args.extend([
+            '--disable-smooth-scrolling',  # Prevent smooth scrolling that can cause UI jumps
+            '--disable-animations',  # Disable CSS animations
+            '--disable-transitions',  # Disable CSS transitions
+            '--disable-background-networking',  # Disable background networking
+            '--disable-background-timer-throttling',  # Disable background timer throttling
+            '--disable-renderer-backgrounding',  # Disable renderer backgrounding
+            '--disable-backgrounding-occluded-windows',  # Disable backgrounding occluded windows
+            '--disable-features=VizDisplayCompositor',  # Better display compositing
+            '--disable-gpu-sandbox',  # Better GPU performance
+            '--enable-gpu-rasterization',  # Better rendering performance
+            '--disable-software-rasterizer',  # Use hardware acceleration
         ])
         
         # Window positioning and sizing

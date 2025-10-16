@@ -117,3 +117,11 @@ reports/
 # OS
 .DS_Store
 Thumbs.db
+
+# Generated browser/profile data (Playwright/Chrome)
+browser_data/
+
+# Test artifacts
+test_results/
+test_screenshots/
+demo_screenshots/

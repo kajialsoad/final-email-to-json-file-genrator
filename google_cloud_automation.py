@@ -64,7 +64,9 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             
             if not email_input_found:
                 self.logger.info("Email input not found, trying Google Cloud Console...")
-                await self.page.goto(self.google_cloud_url)
+                if not await self.safe_goto(self.google_cloud_url):
+                    self.logger.error("❌ Failed to navigate to Google Cloud Console")
+                    return False
                 await self.wait_for_navigation()
                 
                 # Take screenshot for debugging
@@ -815,7 +817,9 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             if not await self.safe_click(create_project_selectors):
                 # If not found in APIs & Services, try the project selector approach
                 self.logger.info("🔄 Create Project not found in APIs & Services, trying project selector...")
-                await self.page.goto("https://console.cloud.google.com/projectselector2/home")
+                if not await self.safe_goto("https://console.cloud.google.com/projectselector2/home"):
+                    self.logger.error("❌ Failed to navigate to project selector")
+                    return False
                 await self.wait_for_navigation()
                 await self.human_delay(2, 3)
                 await self.take_screenshot("05_project_selector")
@@ -850,7 +854,9 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 if not await self.safe_click(new_project_selectors):
                     # Final fallback - direct navigation to new project page
                     self.logger.info("🔄 Trying direct navigation to new project page...")
-                    await self.page.goto("https://console.cloud.google.com/projectcreate")
+                    if not await self.safe_goto("https://console.cloud.google.com/projectcreate"):
+                        self.logger.error("❌ Failed to navigate to project creation page")
+                        return False
                     await self.wait_for_navigation()
                     await self.human_delay(3, 5)
             
@@ -872,7 +878,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 acc_locator = self.page.get_by_label("Project name", exact=False)
                 await acc_locator.wait_for(timeout=6000)
                 await acc_locator.scroll_into_view_if_needed()
-                await acc_locator.click()
+                await self.safe_click(acc_locator)
                 await self.human_delay(0.3, 0.6)
                 try:
                     await acc_locator.fill("")
@@ -894,7 +900,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                     role_locator = self.page.get_by_role("textbox", name=re.compile(r"Project name", re.I))
                     await role_locator.wait_for(timeout=8000)
                     await role_locator.scroll_into_view_if_needed()
-                    await role_locator.click()
+                    await self.safe_click(role_locator)
                     await self.human_delay(0.3, 0.6)
                     try:
                         await role_locator.fill("")
@@ -936,7 +942,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                     
                     locator = self.page.locator(selector)
                     await locator.scroll_into_view_if_needed()
-                    await locator.click()
+                    await self.safe_click(locator)
                     await self.human_delay(0.3, 0.6)
                     
                     # Clear then fill directly to avoid jumbled text
@@ -969,7 +975,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                             frame_locator = frame.get_by_role("textbox", name=re.compile(r"Project name", re.I))
                             await frame_locator.wait_for(timeout=3000)
                             await frame_locator.scroll_into_view_if_needed()
-                            await frame_locator.click()
+                            await self.safe_click(frame_locator)
                             await self.human_delay(0.2, 0.5)
                             try:
                                 await frame_locator.fill("")
@@ -1000,7 +1006,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                         except Exception:
                             is_vis = True  # proceed optimistically
                         await input_field.scroll_into_view_if_needed()
-                        await input_field.click()
+                        await self.safe_click(input_field)
                         await self.human_delay(0.2, 0.5)
                         try:
                             await input_field.fill("")
@@ -1094,7 +1100,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             for selector in create_selectors:
                 try:
                     await self.page.wait_for_selector(selector, timeout=5000)
-                    await self.page.locator(selector).click()
+                    await self.safe_click(self.page.locator(selector))
                     self.logger.info(f"✅ Create button clicked using selector: {selector}")
                     create_clicked = True
                     break
@@ -1107,7 +1113,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 try:
                     create_buttons = await self.page.locator('button:has-text("Create")').all()
                     if create_buttons:
-                        await create_buttons[0].click()
+                        await self.safe_click(create_buttons[0])
                         self.logger.info("✅ Create button clicked using fallback method")
                         create_clicked = True
                 except Exception as e:
@@ -1338,7 +1344,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                             # Check if this element contains project-related text
                             text_content = await element.text_content() or ""
                             if any(keyword in text_content.lower() for keyword in ["select", "project", "create"]):
-                                await element.click()
+                                await self.safe_click(element)
                                 self.logger.info(f"✅ Clicked project selector: {selector} (text: {text_content[:50]})")
                                 selector_clicked = True
                                 await self.human_delay(2, 4)
@@ -1353,7 +1359,9 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             if not selector_clicked:
                 self.logger.warning("⚠️ Could not find project selector dropdown, trying alternative navigation...")
                 # Try navigating to project selector page directly
-                await self.page.goto("https://console.cloud.google.com/projectselector2/home", wait_until="domcontentloaded")
+                if not await self.safe_goto("https://console.cloud.google.com/projectselector2/home"):
+                    self.logger.error("❌ Failed to navigate to project selector page")
+                    return False
                 await self.human_delay(3, 5)
                 await self.take_screenshot("07_project_selector_page")
             
@@ -1426,7 +1434,9 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 
                 # Navigate to APIs page to confirm selection worked
                 try:
-                    await self.page.goto("https://console.cloud.google.com/apis", wait_until="domcontentloaded", timeout=20000)
+                    if not await self.safe_goto("https://console.cloud.google.com/apis"):
+                        self.logger.error("❌ Failed to navigate to APIs page for verification")
+                        return False
                     await self.human_delay(2, 3)
                     
                     # Check if we're successfully on APIs page without project selector
@@ -1452,7 +1462,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 elements = await self.page.locator(selector).all()
                 if elements:
                     # Try to click the first matching element
-                    await elements[0].click()
+                    await self.safe_click(elements[0])
                     self.logger.info(f"✅ Selected project using {strategy_name}: {selector}")
                     return True
             except Exception as e:
@@ -1476,7 +1486,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             for selector in recent_project_selectors:
                 try:
                     if await self.page.locator(selector).count() > 0:
-                        await self.page.locator(selector).click()
+                        await self.safe_click(self.page.locator(selector))
                         self.logger.info(f"✅ Selected most recent project using: {selector}")
                         return True
                 except Exception as e:
@@ -1512,7 +1522,9 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             # Strategy 2: Navigate to general APIs page
             self.logger.info("🔄 Trying general APIs page navigation...")
             try:
-                await self.page.goto("https://console.cloud.google.com/apis", wait_until="domcontentloaded", timeout=20000)
+                if not await self.safe_goto("https://console.cloud.google.com/apis"):
+                    self.logger.error("❌ Failed to navigate to APIs page")
+                    return False
                 await self.human_delay(3, 5)
                 await self.take_screenshot("navigation_general_apis")
                 
@@ -1530,7 +1542,9 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             # Strategy 3: Navigate via Google Cloud Console home
             self.logger.info("🔄 Trying navigation via Console home...")
             try:
-                await self.page.goto("https://console.cloud.google.com/", wait_until="domcontentloaded", timeout=20000)
+                if not await self.safe_goto("https://console.cloud.google.com/"):
+                    self.logger.error("❌ Failed to navigate to Console home")
+                    return False
                 await self.human_delay(3, 5)
                 await self.take_screenshot("navigation_console_home")
                 
@@ -1545,7 +1559,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 for link in apis_links:
                     try:
                         if await self.page.locator(link).count() > 0:
-                            await self.page.locator(link).click()
+                            await self.safe_click(self.page.locator(link))
                             await self.human_delay(3, 5)
                             await self.take_screenshot("navigation_via_home_link")
                             
@@ -1575,7 +1589,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 for selector in menu_selectors:
                     try:
                         if await self.page.locator(selector).count() > 0:
-                            await self.page.locator(selector).click()
+                            await self.safe_click(self.page.locator(selector))
                             await self.human_delay(2, 3)
                             menu_opened = True
                             break
@@ -1593,7 +1607,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                     for link in menu_apis_links:
                         try:
                             if await self.page.locator(link).count() > 0:
-                                await self.page.locator(link).click()
+                                await self.safe_click(self.page.locator(link))
                                 await self.human_delay(3, 5)
                                 await self.take_screenshot("navigation_via_menu")
                                 
@@ -1787,11 +1801,9 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             for attempt in gmail_api_attempts:
                 try:
                     self.logger.info(f"🔗 Trying Gmail API URL: {attempt['url']}")
-                    await self.page.goto(
-                        attempt["url"], 
-                        wait_until=attempt["wait_until"], 
-                        timeout=attempt["timeout"]
-                    )
+                    if not await self.safe_goto(attempt["url"]):
+                        self.logger.warning(f"❌ Failed to navigate to {attempt['url']}")
+                        continue
                     await self.human_delay(2, 4)
                     await self.take_screenshot("08_gmail_api_direct")
                     
@@ -1869,7 +1881,9 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             for url in alternative_urls:
                 try:
                     self.logger.info(f"🔗 Trying alternative URL: {url}")
-                    await self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                    if not await self.safe_goto(url):
+                        self.logger.warning(f"❌ Failed to navigate to {url}")
+                        continue
                     await self.human_delay(1, 3)
                     
                     if await self._check_api_enabled():
@@ -2108,11 +2122,9 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             for strategy in navigation_strategies:
                 try:
                     self.logger.info(f"🔄 Trying OAuth consent navigation with {strategy['wait_until']} wait...")
-                    await self.page.goto(
-                        strategy["url"], 
-                        wait_until=strategy["wait_until"], 
-                        timeout=strategy["timeout"]
-                    )
+                    if not await self.safe_goto(strategy["url"]):
+                        self.logger.warning(f"❌ Failed to navigate to {strategy['url']}")
+                        continue
                     await self.human_delay(3, 5)
                     navigation_success = True
                     self.logger.info("✅ OAuth consent screen navigation successful")
@@ -2125,7 +2137,9 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 # Final fallback: try alternative navigation path
                 self.logger.warning("⚠️ Direct navigation failed, trying alternative path...")
                 try:
-                    await self.page.goto("https://console.cloud.google.com/apis/credentials", timeout=30000)
+                    if not await self.safe_goto("https://console.cloud.google.com/apis/credentials"):
+                        self.logger.warning("❌ Failed to navigate to credentials page")
+                        return False
                     await self.human_delay(2, 3)
                     
                     # Look for OAuth consent screen link
@@ -2139,7 +2153,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                     for selector in consent_link_selectors:
                         try:
                             if await self.page.locator(selector).count() > 0:
-                                await self.page.locator(selector).click()
+                                await self.safe_click(self.page.locator(selector))
                                 await self.human_delay(3, 5)
                                 navigation_success = True
                                 break
@@ -2172,7 +2186,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             for selector in external_selectors:
                 try:
                     if await self.page.locator(selector).count() > 0:
-                        await self.page.locator(selector).click()
+                        await self.safe_click(self.page.locator(selector))
                         external_selected = True
                         self.logger.info(f"✅ External user type selected using: {selector}")
                         await self.human_delay(1, 2)
@@ -2203,7 +2217,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                     # Wait for the button to be available
                     await self.page.wait_for_selector(selector, timeout=10000)
                     if await self.page.locator(selector).count() > 0:
-                        await self.page.locator(selector).click()
+                        await self.safe_click(self.page.locator(selector))
                         create_clicked = True
                         self.logger.info(f"✅ Create button clicked using: {selector}")
                         break
@@ -2272,7 +2286,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                     
                     # Check if it's a dropdown/select element
                     if 'select' in selector or 'mat-select' in selector:
-                        await self.page.locator(selector).click()
+                        await self.safe_click(self.page.locator(selector))
                         await self.human_delay(1, 2)
                         # Select first option (usually current user)
                         option_selectors = [
@@ -2284,7 +2298,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                         for option_selector in option_selectors:
                             try:
                                 if await self.page.locator(option_selector).count() > 0:
-                                    await self.page.locator(option_selector).click()
+                                    await self.safe_click(self.page.locator(option_selector))
                                     support_email_filled = True
                                     break
                             except Exception:
@@ -2326,7 +2340,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 try:
                     await self.page.wait_for_selector(selector, timeout=10000)
                     if await self.page.locator(selector).count() > 0:
-                        await self.page.locator(selector).click()
+                        await self.safe_click(self.page.locator(selector))
                         save_clicked = True
                         self.logger.info(f"✅ Save and Continue clicked using: {selector}")
                         break
@@ -2372,7 +2386,8 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 
                 # Now navigate directly to credentials page for smoother flow
                 self.logger.info("🔄 Navigating to credentials page for next step...")
-                await self.page.goto("https://console.cloud.google.com/apis/credentials", wait_until="networkidle")
+                if not await self.safe_goto("https://console.cloud.google.com/apis/credentials"):
+                    self.logger.warning("❌ Failed to navigate to credentials page")
                 await self.wait_for_navigation()
                 
             except Exception as e:
@@ -2490,7 +2505,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                         text = await button.text_content()
                         if text and "create" in text.lower():
                             self.logger.info(f"Found button {i} with text: '{text}'")
-                            await button.click()
+                            await self.safe_click(button)
                             button_found = True
                             break
                     except Exception:
@@ -2666,7 +2681,7 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                     try:
                         text = await element.text_content()
                         if text and ("download" in text.lower() or "json" in text.lower()):
-                            await element.click()
+                            await self.safe_click(element)
                             download_found = True
                             break
                     except Exception:
