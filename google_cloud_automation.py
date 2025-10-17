@@ -7,6 +7,7 @@ Playwright-based automation for Google Cloud Console operations
 
 import asyncio
 import random
+import re
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime
 
@@ -23,6 +24,79 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
         self.google_cloud_url = "https://console.cloud.google.com"
         self.gmail_api_url = "https://console.cloud.google.com/apis/library/gmail.googleapis.com"
         self.google_signin_url = "https://accounts.google.com/signin"
+    
+    async def safe_navigate_with_retry(self, url: str, max_retries: int = 3, wait_until: str = "networkidle") -> bool:
+        """Navigate to URL with retry logic and enhanced error handling."""
+        for attempt in range(max_retries):
+            try:
+                self.logger.info(f"🌐 Navigating to {url} (attempt {attempt + 1}/{max_retries})")
+                
+                # Use appropriate timeout based on URL type
+                if "apis" in url or "library" in url:
+                    timeout = self.config.automation.api_enablement_timeout
+                elif "project" in url:
+                    timeout = self.config.automation.project_creation_timeout
+                else:
+                    timeout = self.config.browser.navigation_timeout
+                
+                await self.page.goto(url, wait_until=wait_until, timeout=timeout)
+                
+                # Wait for page to stabilize
+                await self.human_delay(2, 4)
+                
+                # Verify navigation was successful
+                current_url = self.page.url
+                if url in current_url or any(part in current_url for part in url.split('/')[-2:]):
+                    self.logger.info(f"✅ Successfully navigated to {url}")
+                    return True
+                else:
+                    self.logger.warning(f"⚠️ Navigation may have redirected: expected {url}, got {current_url}")
+                    if attempt == max_retries - 1:
+                        return False
+                    
+            except Exception as e:
+                self.logger.warning(f"⚠️ Navigation attempt {attempt + 1} failed: {str(e)}")
+                if attempt < max_retries - 1:
+                    await self.human_delay(3, 5)
+                    continue
+                else:
+                    self.logger.error(f"❌ All navigation attempts failed for {url}")
+                    return False
+        
+        return False
+    
+    async def safe_wait_for_selector_with_retry(self, selectors: List[str], timeout: int = None, max_retries: int = 2) -> bool:
+        """Wait for any of the provided selectors with retry logic."""
+        if timeout is None:
+            timeout = self.config.automation.project_selection_timeout
+        
+        for attempt in range(max_retries):
+            try:
+                self.logger.debug(f"🔍 Waiting for selectors (attempt {attempt + 1}/{max_retries}): {selectors}")
+                
+                for selector in selectors:
+                    try:
+                        await self.page.wait_for_selector(selector, timeout=timeout // len(selectors))
+                        self.logger.debug(f"✅ Found selector: {selector}")
+                        return True
+                    except Exception:
+                        continue
+                
+                if attempt < max_retries - 1:
+                    self.logger.debug(f"⚠️ No selectors found, retrying...")
+                    await self.human_delay(2, 3)
+                    continue
+                else:
+                    self.logger.warning(f"⚠️ None of the selectors found after {max_retries} attempts")
+                    return False
+                    
+            except Exception as e:
+                self.logger.debug(f"Selector wait attempt {attempt + 1} failed: {str(e)}")
+                if attempt < max_retries - 1:
+                    await self.human_delay(1, 2)
+                    continue
+        
+        return False
         
     @retry_async(context="google_cloud_login")
     async def login_to_google_cloud(self, email: str, password: str) -> bool:
@@ -786,9 +860,56 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             
             # Navigate directly to APIs & Services as per user instructions
             self.logger.info("🔧 Navigating to APIs & Services...")
-            await self.page.goto("https://console.cloud.google.com/apis")
-            await self.wait_for_navigation()
-            await self.human_delay(3, 5)
+            # Use a more forgiving waitUntil to avoid endless networkidle on GCP
+            if not await self.safe_navigate_with_retry("https://console.cloud.google.com/apis", wait_until="domcontentloaded"):
+                self.logger.warning("⚠️ Failed to navigate to APIs & Services, trying alternative approach...")
+                # Instead of aborting, continue via project selector directly
+                if not await self.safe_navigate_with_retry("https://console.cloud.google.com/projectselector2/home", wait_until="domcontentloaded"):
+                    self.logger.error("❌ Failed to navigate to project selector; attempting direct project creation page...")
+                    await self.page.goto("https://console.cloud.google.com/projectcreate", wait_until="domcontentloaded", timeout=self.config.automation.project_creation_timeout)
+                    await self.wait_for_navigation()
+                    await self.human_delay(2, 4)
+                    # Proceed to form handling below
+                else:
+                    await self.take_screenshot("05_project_selector")
+                    # Try to continue with selector flow further down
+                    # Skip the APIs & Services screenshot in this branch
+                    
+                    # Try to find existing project first
+                    try:
+                        project_selectors = [
+                            f'text="{project_name}"',
+                            f'[title="{project_name}"]',
+                            f'div:has-text("{project_name}")'
+                        ]
+                        for selector in project_selectors:
+                            if await self.page.locator(selector).count() > 0:
+                                await self.safe_click([selector])
+                                self.logger.info(f"✅ Selected existing project: {project_name}")
+                                return True
+                    except Exception:
+                        pass
+                    
+                    # Look for New project button and continue as usual
+                    new_project_selectors = [
+                        'button:has-text("NEW PROJECT")',
+                        'a:has-text("NEW PROJECT")',
+                        'button:has-text("Create Project")',
+                        'a:has-text("Create Project")',
+                        '[data-testid="create-project"]',
+                        'button[aria-label*="Create"]',
+                        'text="NEW PROJECT"',
+                        'button:has-text("New project")',
+                        'text="New project"'
+                    ]
+                    if not await self.safe_click(new_project_selectors):
+                        # Fallback: direct navigation to new project page
+                        self.logger.info("🔄 Trying direct navigation to new project page from selector branch...")
+                        await self.page.goto("https://console.cloud.google.com/projectcreate", wait_until="domcontentloaded", timeout=self.config.automation.project_creation_timeout)
+                        await self.wait_for_navigation()
+                        await self.human_delay(2, 4)
+            else:
+                await self.take_screenshot("05_apis_services")
             await self.take_screenshot("05_apis_services")
             
             # Skip country selection and terms handling - go straight to project creation
@@ -814,9 +935,9 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             if not await self.safe_click(create_project_selectors):
                 # If not found in APIs & Services, try the project selector approach
                 self.logger.info("🔄 Create Project not found in APIs & Services, trying project selector...")
-                await self.page.goto("https://console.cloud.google.com/projectselector2/home")
-                await self.wait_for_navigation()
-                await self.human_delay(2, 3)
+                if not await self.safe_navigate_with_retry("https://console.cloud.google.com/projectselector2/home", wait_until="domcontentloaded"):
+                    self.logger.error("❌ Failed to navigate to project selector")
+                    return False
                 await self.take_screenshot("05_project_selector")
                 
                 # Try to find existing project first
@@ -843,13 +964,30 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                     'a:has-text("Create Project")',
                     '[data-testid="create-project"]',
                     'button[aria-label*="Create"]',
-                    'text="NEW PROJECT"'
+                    'text="NEW PROJECT"',
+                    'button:has-text("New project")',
+                    'text="New project"'
                 ]
                 
                 if not await self.safe_click(new_project_selectors):
+                    # If modal shows resource loading error, try Retry then New project
+                    try:
+                        error_indicator = 'text="Error while loading resources."'
+                        if await self.page.locator(error_indicator).count() > 0:
+                            self.logger.info("🔧 Detected resource loading error, clicking Retry...")
+                            retry_selectors = [
+                                'text="Retry"',
+                                'button:has-text("Retry")'
+                            ]
+                            await self.safe_click(retry_selectors)
+                            await self.human_delay(2, 3)
+                            await self.safe_click(['button:has-text("New project")','text="New project"'])
+                    except Exception:
+                        pass
+
                     # Final fallback - direct navigation to new project page
                     self.logger.info("🔄 Trying direct navigation to new project page...")
-                    await self.page.goto("https://console.cloud.google.com/projectcreate")
+                    await self.page.goto("https://console.cloud.google.com/projectcreate", wait_until="domcontentloaded", timeout=self.config.automation.project_creation_timeout)
                     await self.wait_for_navigation()
                     await self.human_delay(3, 5)
             
@@ -862,39 +1000,88 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             self.logger.info("⏳ Waiting for New Project form to load...")
             await self.page.wait_for_selector('text="New Project"', timeout=10000)
             await self.human_delay(2, 3)
-            
-            # Enter project name - updated selectors based on actual form structure
+
+            # Track whether we've successfully entered the name
+            name_entered = False
+
+            # First attempt: accessible locators (label/role) for maximum reliability
+            try:
+                acc_locator = self.page.get_by_label("Project name", exact=False)
+                await acc_locator.wait_for(timeout=6000)
+                await acc_locator.scroll_into_view_if_needed()
+                await acc_locator.click()
+                await self.human_delay(0.3, 0.6)
+                try:
+                    await acc_locator.fill("")
+                except Exception:
+                    pass
+                await acc_locator.fill(project_name)
+                entered_value = await acc_locator.input_value()
+                if project_name in entered_value or entered_value == project_name:
+                    self.logger.info(f"✅ Project name entered via accessible label: {project_name}")
+                    name_entered = True
+                else:
+                    self.logger.warning(f"⚠️ Text verification failed for accessible label. Expected: {project_name}, Got: {entered_value}")
+            except Exception as e:
+                self.logger.debug(f"Accessible label locator failed: {str(e)}")
+
+            # If label-based locator did not succeed, try role-based locator
+            if not name_entered:
+                try:
+                    role_locator = self.page.get_by_role("textbox", name=re.compile(r"Project name", re.I))
+                    await role_locator.wait_for(timeout=8000)
+                    await role_locator.scroll_into_view_if_needed()
+                    await role_locator.click()
+                    await self.human_delay(0.3, 0.6)
+                    try:
+                        await role_locator.fill("")
+                    except Exception:
+                        pass
+                    await role_locator.fill(project_name)
+                    entered_value = await role_locator.input_value()
+                    if project_name in entered_value or entered_value == project_name:
+                        self.logger.info(f"✅ Project name entered via role textbox: {project_name}")
+                        name_entered = True
+                    else:
+                        self.logger.warning(f"⚠️ Text verification failed for role textbox. Expected: {project_name}, Got: {entered_value}")
+                except Exception as e:
+                    self.logger.debug(f"Role-based textbox locator failed: {str(e)}")
+
+            # Enter project name - prefer label-based and aria-label selectors
             project_name_selectors = [
-                'input[type="text"]',  # Most likely selector based on screenshot
+                'input[aria-label*="Project name"]',
+                'input[aria-label*="project name"]',
+                'label:has-text("Project name") ~ input',
+                'label:has-text("Project name") + input',
                 'input[name="projectId"]',
                 'input[name="name"]',
                 'input[id*="project"]',
-                'input[placeholder*="project"]',
-                'input[aria-label*="Project name"]',
-                'input[aria-label*="project name"]',
+                'input[placeholder*="Project"]',
+                '.mat-mdc-form-field:has-text("Project name") input',
+                'input[class*="mat-input-element"]',
                 'form input[type="text"]',
                 '.form-field input',
-                'div:has-text("Project name") + * input'
+                'input[type="text"]'
             ]
             
             self.logger.info("🔍 Looking for project name input field...")
             
-            name_entered = False
             for selector in project_name_selectors:
                 try:
                     # Wait for the input field to be available
                     await self.page.wait_for_selector(selector, timeout=5000)
                     
-                    # Focus on the input field first
-                    await self.page.locator(selector).focus()
-                    await self.human_delay(0.5, 1)
+                    locator = self.page.locator(selector)
+                    await locator.scroll_into_view_if_needed()
+                    await locator.click()
+                    await self.human_delay(0.3, 0.6)
                     
-                    # Select all existing text and replace it
-                    await self.page.keyboard.press("Control+a")
-                    await self.human_delay(0.3, 0.5)
-                    
-                    # Type the new project name
-                    await self.human_type(selector, project_name)
+                    # Clear then fill directly to avoid jumbled text
+                    try:
+                        await locator.fill("")
+                    except Exception:
+                        pass
+                    await locator.fill(project_name)
                     await self.human_delay(0.5, 1)
                     
                     # Verify the text was entered
@@ -911,20 +1098,58 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                     continue
             
             if not name_entered:
-                # Try a more aggressive approach - find any visible input field
-                self.logger.warning("⚠️ Standard selectors failed, trying fallback approach...")
+                # Try frame-aware fallback - some GCP flows render forms inside iframes
+                self.logger.warning("⚠️ Standard selectors failed, trying iframe-aware fallback...")
                 try:
-                    # Look for any visible input field on the page
-                    inputs = await self.page.locator('input[type="text"]:visible').all()
-                    if inputs:
-                        input_field = inputs[0]  # Take the first visible text input
-                        await input_field.focus()
-                        await self.page.keyboard.press("Control+a")
-                        await input_field.fill(project_name)
-                        self.logger.info(f"✅ Project name entered using fallback method: {project_name}")
-                        name_entered = True
+                    for frame in self.page.frames:
+                        try:
+                            frame_locator = frame.get_by_role("textbox", name=re.compile(r"Project name", re.I))
+                            await frame_locator.wait_for(timeout=3000)
+                            await frame_locator.scroll_into_view_if_needed()
+                            await frame_locator.click()
+                            await self.human_delay(0.2, 0.5)
+                            try:
+                                await frame_locator.fill("")
+                            except Exception:
+                                pass
+                            await frame_locator.fill(project_name)
+                            entered_value = await frame_locator.input_value()
+                            if project_name in entered_value or entered_value == project_name:
+                                self.logger.info(f"✅ Project name entered inside iframe: {project_name}")
+                                name_entered = True
+                                break
+                        except Exception:
+                            continue
                 except Exception as e:
-                    self.logger.error(f"❌ Fallback method also failed: {str(e)}")
+                    self.logger.debug(f"Iframe fallback iteration failed: {str(e)}")
+
+            if not name_entered:
+                # Last-resort generic visible input fallback
+                self.logger.warning("⚠️ Iframe fallback failed, trying generic visible input...")
+                try:
+                    input_candidates = self.page.locator('input[type="text"]')
+                    count = await input_candidates.count()
+                    if count > 0:
+                        input_field = input_candidates.first
+                        # Ensure visible and interactable
+                        try:
+                            is_vis = await input_field.is_visible()
+                        except Exception:
+                            is_vis = True  # proceed optimistically
+                        await input_field.scroll_into_view_if_needed()
+                        await input_field.click()
+                        await self.human_delay(0.2, 0.5)
+                        try:
+                            await input_field.fill("")
+                        except Exception:
+                            pass
+                        await input_field.fill(project_name)
+                        entered_value = await input_field.input_value()
+                        if project_name in entered_value or entered_value == project_name:
+                            self.logger.info(f"✅ Project name entered using generic fallback: {project_name}")
+                            name_entered = True
+                except Exception as e:
+                    self.logger.error(f"❌ Generic fallback also failed: {str(e)}")
             
             if not name_entered:
                 raise Exception("Could not find or fill project name input field")
@@ -988,6 +1213,40 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 await self.human_delay(1, 2)
             
             # Click create button - updated selectors based on actual form
+            # Before clicking, ensure no blocking dialogs (e.g., folder Browse modal) are open
+            try:
+                blocking_dialog_indicators = [
+                    'text="Search folders"',
+                    'input[placeholder*="Search folders"]',
+                    'div[role="dialog"]:has-text("Search folders")',
+                    'text="Error while loading resources."'
+                ]
+                dialog_open = False
+                for indicator in blocking_dialog_indicators:
+                    try:
+                        if await self.page.locator(indicator).count() > 0:
+                            dialog_open = True
+                            break
+                    except Exception:
+                        continue
+                if dialog_open:
+                    self.logger.info("🔧 Dismissing folder browse dialog before clicking Create...")
+                    # Try Escape first
+                    try:
+                        await self.page.keyboard.press("Escape")
+                        await self.human_delay(0.8, 1.2)
+                    except Exception:
+                        pass
+                    # Try common close/cancel buttons
+                    await self.safe_click([
+                        'button:has-text("Cancel")',
+                        'button[aria-label="Close"]',
+                        'button:has-text("Close")'
+                    ])
+                    await self.human_delay(0.8, 1.2)
+            except Exception:
+                pass
+
             create_selectors = [
                 'button:has-text("Create")',  # Exact match from screenshot
                 'button:has-text("CREATE")',
@@ -1024,43 +1283,88 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                         create_clicked = True
                 except Exception as e:
                     self.logger.error(f"❌ Fallback Create button click failed: {str(e)}")
-            
+
+            if not create_clicked:
+                # Frame-aware fallback: some tenants render the form inside an iframe
+                try:
+                    for frame in self.page.frames:
+                        try:
+                            btn = frame.locator('button:has-text("Create")')
+                            if await btn.count() > 0:
+                                await btn.first.click()
+                                self.logger.info("✅ Create button clicked inside iframe")
+                                create_clicked = True
+                                break
+                        except Exception:
+                            continue
+                except Exception as e:
+                    self.logger.debug(f"Iframe search for Create button failed: {str(e)}")
+
             if not create_clicked:
                 raise Exception("Could not find or click Create button")
             
             self.logger.info("✅ Create button clicked, waiting for project creation...")
             
-            # Wait for project creation - this can take some time
+            # Wait for project creation - this can take some time, use longer timeout
+            await self.human_delay(8, 12)  # Increased wait time
+            
+            # Wait for navigation with extended timeout
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=self.config.automation.project_creation_timeout)
+            except Exception as e:
+                self.logger.warning(f"⚠️ Navigation timeout during project creation: {str(e)}")
+                # Continue anyway as project might still be created
+            
+            # Additional wait for project creation to complete
             await self.human_delay(5, 8)
-            await self.wait_for_navigation()
             
             # Take screenshot after creation attempt
             await self.take_screenshot("07_project_created")
             
-            # Verify project creation by checking URL or page content
-            current_url = self.page.url
-            if "console.cloud.google.com" in current_url and "projectselector" not in current_url:
-                self.logger.info(f"✅ Project created successfully: {project_name}")
-                
-                # After project creation, we need to select the project if we're on APIs & Services page
-                await self._ensure_project_selected(project_name)
-                return True
-            else:
-                # Additional verification - look for project name in the interface
-                project_indicators = [
-                    f'text="{project_name}"',
-                    f'[title*="{project_name}"]'
-                ]
-                
-                for indicator in project_indicators:
-                    if await self.page.locator(indicator).count() > 0:
-                        self.logger.info(f"✅ Project created and verified: {project_name}")
-                        await self._ensure_project_selected(project_name)
-                        return True
-                
+            # Verify project creation by checking URL or page content with retries
+            creation_verified = False
+            for attempt in range(3):
+                try:
+                    current_url = self.page.url
+                    self.logger.info(f"🔍 Verification attempt {attempt + 1}: Current URL: {current_url}")
+                    
+                    if "console.cloud.google.com" in current_url and "projectselector" not in current_url:
+                        self.logger.info(f"✅ Project created successfully: {project_name}")
+                        creation_verified = True
+                        break
+                    else:
+                        # Additional verification - look for project name in the interface
+                        project_indicators = [
+                            f'text="{project_name}"',
+                            f'[title*="{project_name}"]',
+                            'text="Project created"',
+                            'text="successfully created"'
+                        ]
+                        
+                        for indicator in project_indicators:
+                            if await self.page.locator(indicator).count() > 0:
+                                self.logger.info(f"✅ Project created and verified: {project_name}")
+                                creation_verified = True
+                                break
+                        
+                        if creation_verified:
+                            break
+                    
+                    # Wait before next attempt
+                    if attempt < 2:
+                        await self.human_delay(5, 8)
+                        
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Verification attempt {attempt + 1} failed: {str(e)}")
+                    if attempt < 2:
+                        await self.human_delay(3, 5)
+            
+            if not creation_verified:
                 self.logger.warning("⚠️ Project creation status unclear, but continuing...")
-                await self._ensure_project_selected(project_name)
-                return True
+            
+            # After project creation, ensure the project is selected
+            await self._ensure_project_selected(project_name)
+            return True
             
         except Exception as e:
             log_error(e, "project_creation", additional_data={'project_name': project_name})
@@ -1134,34 +1438,63 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             # Look for the newly created project in the dropdown
             await self.take_screenshot("07_project_dropdown_open")
             
-            # Wait for dropdown to load
-            await self.human_delay(1, 2)
+            # Wait for dropdown to load with extended timeout
+            await self.human_delay(3, 5)
             
-            # Try to find and click the project
-            project_selectors = [
-                f'text="{project_name}"',
-                f'[title="{project_name}"]',
-                f'div:has-text("{project_name}")',
-                f'li:has-text("{project_name}")',
-                f'[role="option"]:has-text("{project_name}")',
-                f'button:has-text("{project_name}")'
-            ]
+            # Wait for dropdown content to fully load
+            try:
+                await self.page.wait_for_selector('[role="option"], li, div[data-value]', timeout=self.config.automation.project_selection_timeout)
+            except Exception as e:
+                self.logger.warning(f"⚠️ Dropdown content load timeout: {str(e)}")
             
+            # Try multiple approaches to find and select the project
             project_selected = False
-            for selector in project_selectors:
-                try:
-                    if await self.page.locator(selector).count() > 0:
-                        await self.page.locator(selector).click()
-                        self.logger.info(f"✅ Selected project '{project_name}' using selector: {selector}")
-                        project_selected = True
-                        await self.human_delay(2, 3)
-                        break
-                except Exception as e:
-                    self.logger.debug(f"Failed to select project with selector {selector}: {str(e)}")
-                    continue
             
+            # Approach 1: Direct text search with multiple attempts
+            for attempt in range(3):
+                self.logger.info(f"🔍 Project selection attempt {attempt + 1}")
+                
+                project_selectors = [
+                    f'text="{project_name}"',
+                    f'[title="{project_name}"]',
+                    f'div:has-text("{project_name}")',
+                    f'li:has-text("{project_name}")',
+                    f'[role="option"]:has-text("{project_name}")',
+                    f'button:has-text("{project_name}")',
+                    f'span:has-text("{project_name}")',
+                    f'[data-value="{project_name}"]'
+                ]
+                
+                for selector in project_selectors:
+                    try:
+                        elements = await self.page.locator(selector).all()
+                        if elements:
+                            # Try to click the first visible element
+                            for element in elements:
+                                try:
+                                    if await element.is_visible():
+                                        await element.click()
+                                        self.logger.info(f"✅ Selected project '{project_name}' using selector: {selector}")
+                                        project_selected = True
+                                        await self.human_delay(2, 3)
+                                        break
+                                except Exception:
+                                    continue
+                            if project_selected:
+                                break
+                    except Exception as e:
+                        self.logger.debug(f"Failed to select project with selector {selector}: {str(e)}")
+                        continue
+                
+                if project_selected:
+                    break
+                
+                # Wait before next attempt
+                if attempt < 2:
+                    await self.human_delay(2, 3)
+            
+            # Approach 2: Partial name matching if exact match failed
             if not project_selected:
-                # Try to find any project that contains part of our project name
                 self.logger.warning(f"⚠️ Exact project name not found, looking for partial matches...")
                 
                 # Extract the base name (remove timestamp suffix)
@@ -1171,20 +1504,71 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 partial_selectors = [
                     f'text*="{base_pattern}"',
                     f'div:has-text("{base_pattern}")',
-                    f'li:has-text("{base_pattern}")'
+                    f'li:has-text("{base_pattern}")',
+                    f'[role="option"]:has-text("{base_pattern}")',
+                    f'span:has-text("{base_pattern}")'
                 ]
                 
                 for selector in partial_selectors:
                     try:
-                        if await self.page.locator(selector).count() > 0:
-                            await self.page.locator(selector).click()
-                            self.logger.info(f"✅ Selected project using partial match: {selector}")
-                            project_selected = True
-                            await self.human_delay(2, 3)
-                            break
+                        elements = await self.page.locator(selector).all()
+                        if elements:
+                            for element in elements:
+                                try:
+                                    if await element.is_visible():
+                                        await element.click()
+                                        self.logger.info(f"✅ Selected project using partial match: {selector}")
+                                        project_selected = True
+                                        await self.human_delay(2, 3)
+                                        break
+                                except Exception:
+                                    continue
+                            if project_selected:
+                                break
                     except Exception as e:
                         self.logger.debug(f"Failed to select project with partial selector {selector}: {str(e)}")
                         continue
+            
+            # Approach 3: Search functionality if available
+            if not project_selected:
+                self.logger.info("🔍 Trying search functionality...")
+                try:
+                    search_selectors = [
+                        'input[placeholder*="Search"]',
+                        'input[placeholder*="search"]',
+                        'input[type="search"]',
+                        'input[aria-label*="Search"]'
+                    ]
+                    
+                    for search_selector in search_selectors:
+                        try:
+                            if await self.page.locator(search_selector).count() > 0:
+                                await self.page.locator(search_selector).fill(project_name)
+                                await self.human_delay(1, 2)
+                                
+                                # Try to select the first result
+                                result_selectors = [
+                                    f'text="{project_name}"',
+                                    '[role="option"]:first-child',
+                                    'li:first-child'
+                                ]
+                                
+                                for result_selector in result_selectors:
+                                    try:
+                                        if await self.page.locator(result_selector).count() > 0:
+                                            await self.page.locator(result_selector).click()
+                                            self.logger.info(f"✅ Selected project using search: {project_name}")
+                                            project_selected = True
+                                            break
+                                    except Exception:
+                                        continue
+                                
+                                if project_selected:
+                                    break
+                        except Exception:
+                            continue
+                except Exception as e:
+                    self.logger.debug(f"Search functionality failed: {str(e)}")
             
             if not project_selected:
                 self.logger.warning("⚠️ Could not find the created project in dropdown, continuing anyway...")
@@ -1235,16 +1619,15 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             # If we're still on a project selection page, navigate to APIs & Services first
             if "projectselector" in current_url or "select" in current_url.lower():
                 self.logger.info("🔄 Still on project selector, navigating to APIs & Services...")
-                await self.page.goto("https://console.cloud.google.com/apis", wait_until="networkidle", timeout=30000)
-                await self.human_delay(3, 5)
+                if not await self.safe_navigate_with_retry("https://console.cloud.google.com/apis"):
+                    self.logger.warning("⚠️ Failed to navigate to APIs & Services before API enablement")
                 await self.take_screenshot("08_apis_services_before_api")
             
             # Try direct navigation to Gmail API first (most reliable)
             self.logger.info("🎯 Trying direct navigation to Gmail API...")
             try:
-                await self.page.goto(self.gmail_api_url, wait_until="networkidle", timeout=30000)
-                await self.human_delay(3, 5)
-                await self.take_screenshot("08_gmail_api_direct")
+                if await self.safe_navigate_with_retry(self.gmail_api_url):
+                    await self.take_screenshot("08_gmail_api_direct")
                 
                 # Check if we're on the Gmail API page
                 if "gmail.googleapis.com" in self.page.url or await self.page.locator('text="Gmail API"').count() > 0:
@@ -1265,9 +1648,8 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             # Fallback: Navigate to API Library and search
             self.logger.info("📚 Fallback: Navigating to API Library...")
             try:
-                await self.page.goto("https://console.cloud.google.com/apis/library", wait_until="networkidle", timeout=30000)
-                await self.human_delay(3, 5)
-                await self.take_screenshot("08_api_library")
+                if await self.safe_navigate_with_retry("https://console.cloud.google.com/apis/library"):
+                    await self.take_screenshot("08_api_library")
                 
                 # Wait for page to fully load
                 await self.page.wait_for_load_state("domcontentloaded", timeout=30000)
@@ -1292,8 +1674,8 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             for url in alternative_urls:
                 try:
                     self.logger.info(f"🔗 Trying alternative URL: {url}")
-                    await self.page.goto(url, wait_until="networkidle", timeout=30000)
-                    await self.human_delay(2, 3)
+                    if not await self.safe_navigate_with_retry(url):
+                        continue
                     
                     if await self._check_api_enabled():
                         self.logger.info("✅ Gmail API is already enabled")

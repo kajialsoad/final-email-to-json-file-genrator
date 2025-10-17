@@ -102,7 +102,8 @@ class GmailOAuthGUI:
     def setup_main_window(self):
         """Setup the main window"""
         self.root.title("Gmail OAuth Client JSON Generator - Playwright Edition")
-        self.root.geometry("900x700")
+        self.root.geometry("850x650")
+        self.root.minsize(800, 600)
         self.root.configure(bg='#f0f0f0')
         
         # Configure styles
@@ -110,16 +111,16 @@ class GmailOAuthGUI:
         style.theme_use('clam')
         
         # Custom styles
-        style.configure('Title.TLabel', font=('Arial', 16, 'bold'), background='#f0f0f0')
-        style.configure('Header.TLabel', font=('Arial', 12, 'bold'), background='#f0f0f0')
+        style.configure('Title.TLabel', font=('Arial', 14, 'bold'), background='#f0f0f0')
+        style.configure('Header.TLabel', font=('Arial', 11, 'bold'), background='#f0f0f0')
         style.configure('Success.TLabel', foreground='green', background='#f0f0f0')
         style.configure('Error.TLabel', foreground='red', background='#f0f0f0')
         style.configure('Warning.TLabel', foreground='orange', background='#f0f0f0')
     
     def setup_widgets(self):
         """Setup all GUI widgets"""
-        # Main container
-        main_frame = ttk.Frame(self.root, padding="10")
+        # Main container with reduced padding
+        main_frame = ttk.Frame(self.root, padding="5")
         main_frame.grid(row=0, column=0, sticky=(W, E, N, S))
         
         # Configure grid weights
@@ -127,13 +128,13 @@ class GmailOAuthGUI:
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(0, weight=1)
         
-        # Title
+        # Title with reduced spacing
         title_label = ttk.Label(main_frame, text="Gmail OAuth Client JSON Generator", style='Title.TLabel')
-        title_label.grid(row=0, column=0, pady=(0, 20))
+        title_label.grid(row=0, column=0, pady=(0, 8))
         
-        # Create notebook for tabs
+        # Create notebook for tabs with reduced spacing
         self.notebook = ttk.Notebook(main_frame)
-        self.notebook.grid(row=1, column=0, sticky=(W, E, N, S), pady=(0, 10))
+        self.notebook.grid(row=1, column=0, sticky=(W, E, N, S), pady=(0, 5))
         main_frame.rowconfigure(1, weight=1)
         
         # Setup tabs
@@ -152,18 +153,18 @@ class GmailOAuthGUI:
     
     def setup_single_account_tab(self):
         """Setup single account processing tab"""
-        single_frame = ttk.Frame(self.notebook, padding="10")
+        single_frame = ttk.Frame(self.notebook, padding="8")
         self.notebook.add(single_frame, text="Single Account")
         
         # Email input
-        ttk.Label(single_frame, text="Email:", style='Header.TLabel').grid(row=0, column=0, sticky=W, pady=(0, 5))
+        ttk.Label(single_frame, text="Email:", style='Header.TLabel').grid(row=0, column=0, sticky=W, pady=(0, 3))
         email_entry = ttk.Entry(single_frame, textvariable=self.single_email, width=40)
-        email_entry.grid(row=1, column=0, columnspan=2, sticky=(W, E), pady=(0, 10))
+        email_entry.grid(row=1, column=0, columnspan=2, sticky=(W, E), pady=(0, 8))
         
         # Password input
-        ttk.Label(single_frame, text="Password:", style='Header.TLabel').grid(row=2, column=0, sticky=W, pady=(0, 5))
+        ttk.Label(single_frame, text="Password:", style='Header.TLabel').grid(row=2, column=0, sticky=W, pady=(0, 3))
         password_entry = ttk.Entry(single_frame, textvariable=self.single_password, show="*", width=40)
-        password_entry.grid(row=3, column=0, columnspan=2, sticky=(W, E), pady=(0, 10))
+        password_entry.grid(row=3, column=0, columnspan=2, sticky=(W, E), pady=(0, 8))
         
         # Generate button
         generate_btn = ttk.Button(
@@ -172,21 +173,21 @@ class GmailOAuthGUI:
             command=self.start_single_generation,
             style='Accent.TButton'
         )
-        generate_btn.grid(row=4, column=0, columnspan=2, pady=20)
+        generate_btn.grid(row=4, column=0, columnspan=2, pady=12)
         
         # Configure column weights
         single_frame.columnconfigure(0, weight=1)
     
     def setup_batch_processing_tab(self):
         """Setup batch processing tab"""
-        batch_frame = ttk.Frame(self.notebook, padding="10")
+        batch_frame = ttk.Frame(self.notebook, padding="8")
         self.notebook.add(batch_frame, text="Batch Processing")
         
         # File selection
-        ttk.Label(batch_frame, text="CSV/Excel File:", style='Header.TLabel').grid(row=0, column=0, sticky=W, pady=(0, 5))
+        ttk.Label(batch_frame, text="CSV/Excel File:", style='Header.TLabel').grid(row=0, column=0, sticky=W, pady=(0, 3))
         
         file_frame = ttk.Frame(batch_frame)
-        file_frame.grid(row=1, column=0, columnspan=2, sticky=(W, E), pady=(0, 10))
+        file_frame.grid(row=1, column=0, columnspan=2, sticky=(W, E), pady=(0, 6))
         file_frame.columnconfigure(0, weight=1)
         
         file_entry = ttk.Entry(file_frame, textvariable=self.csv_file_path, width=50)
@@ -196,7 +197,7 @@ class GmailOAuthGUI:
         
         # File format info
         info_text = "File format: CSV or Excel with columns 'email' and 'password'"
-        ttk.Label(batch_frame, text=info_text, foreground='gray').grid(row=2, column=0, columnspan=2, sticky=W, pady=(0, 10))
+        ttk.Label(batch_frame, text=info_text, foreground='gray').grid(row=2, column=0, columnspan=2, sticky=W, pady=(0, 6))
         
         # Load accounts button
         load_btn = ttk.Button(batch_frame, text="Load Accounts", command=self.load_accounts)
@@ -236,7 +237,7 @@ class GmailOAuthGUI:
     
     def setup_settings_tab(self):
         """Setup settings tab"""
-        settings_frame = ttk.Frame(self.notebook, padding="10")
+        settings_frame = ttk.Frame(self.notebook, padding="8")
         self.notebook.add(settings_frame, text="Settings")
         
         # Create scrollable frame
@@ -259,13 +260,13 @@ class GmailOAuthGUI:
         settings_frame.rowconfigure(0, weight=1)
         
         # Browser settings
-        ttk.Label(scrollable_frame, text="Browser Settings:", style='Header.TLabel').grid(row=0, column=0, sticky=W, pady=(0, 10))
+        ttk.Label(scrollable_frame, text="Browser Settings:", style='Header.TLabel').grid(row=0, column=0, sticky=W, pady=(0, 6))
         
         ttk.Checkbutton(scrollable_frame, text="Headless Mode", variable=self.headless_mode).grid(row=1, column=0, sticky=W, pady=2)
         ttk.Checkbutton(scrollable_frame, text="Stealth Mode", variable=self.stealth_mode).grid(row=2, column=0, sticky=W, pady=2)
         
         # Automation settings
-        ttk.Label(scrollable_frame, text="Automation Settings:", style='Header.TLabel').grid(row=3, column=0, sticky=W, pady=(20, 10))
+        ttk.Label(scrollable_frame, text="Automation Settings:", style='Header.TLabel').grid(row=3, column=0, sticky=W, pady=(12, 6))
         
         ttk.Label(scrollable_frame, text="Retry Attempts:").grid(row=4, column=0, sticky=W, pady=2)
         retry_spin = ttk.Spinbox(scrollable_frame, from_=1, to=10, textvariable=self.retry_attempts, width=10)
@@ -276,7 +277,7 @@ class GmailOAuthGUI:
         concurrent_spin.grid(row=5, column=1, sticky=W, padx=(10, 0), pady=2)
         
         # Approver Email Settings
-        ttk.Label(scrollable_frame, text="Approver Email Settings:", style='Header.TLabel').grid(row=6, column=0, sticky=W, pady=(20, 10))
+        ttk.Label(scrollable_frame, text="Approver Email Settings:", style='Header.TLabel').grid(row=6, column=0, sticky=W, pady=(12, 6))
         
         # Enable approver functionality
         ttk.Checkbutton(scrollable_frame, text="Enable Approver Email Functionality", variable=self.approver_enabled).grid(row=7, column=0, columnspan=2, sticky=W, pady=2)
@@ -303,12 +304,12 @@ class GmailOAuthGUI:
         
         # Save settings button
         save_btn = ttk.Button(scrollable_frame, text="Save Settings", command=self.save_settings)
-        save_btn.grid(row=13, column=0, columnspan=2, pady=20)
+        save_btn.grid(row=13, column=0, columnspan=2, pady=12)
     
     def setup_progress_section(self, parent):
         """Setup progress tracking section"""
-        progress_frame = ttk.LabelFrame(parent, text="Progress", padding="10")
-        progress_frame.grid(row=2, column=0, sticky=(W, E), pady=(0, 10))
+        progress_frame = ttk.LabelFrame(parent, text="Progress", padding="6")
+        progress_frame.grid(row=2, column=0, sticky=(W, E), pady=(0, 5))
         progress_frame.columnconfigure(1, weight=1)
         
         # Status
@@ -322,13 +323,13 @@ class GmailOAuthGUI:
         current_label.grid(row=1, column=1, sticky=W)
         
         # Progress bar
-        ttk.Label(progress_frame, text="Progress:").grid(row=2, column=0, sticky=W, padx=(0, 10), pady=(10, 0))
+        ttk.Label(progress_frame, text="Progress:").grid(row=2, column=0, sticky=W, padx=(0, 10), pady=(6, 0))
         self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
-        self.progress_bar.grid(row=2, column=1, sticky=(W, E), pady=(10, 0))
+        self.progress_bar.grid(row=2, column=1, sticky=(W, E), pady=(6, 0))
         
         # Statistics
         stats_frame = ttk.Frame(progress_frame)
-        stats_frame.grid(row=3, column=0, columnspan=2, sticky=(W, E), pady=(10, 0))
+        stats_frame.grid(row=3, column=0, columnspan=2, sticky=(W, E), pady=(6, 0))
         
         ttk.Label(stats_frame, text="Total:").grid(row=0, column=0, padx=(0, 5))
         ttk.Label(stats_frame, textvariable=self.total_accounts).grid(row=0, column=1, padx=(0, 15))
@@ -351,7 +352,7 @@ class GmailOAuthGUI:
     def setup_action_buttons(self, parent):
         """Setup action buttons"""
         button_frame = ttk.Frame(parent)
-        button_frame.grid(row=3, column=0, pady=(0, 10))
+        button_frame.grid(row=3, column=0, pady=(0, 5))
         
         # Stop button
         self.stop_btn = ttk.Button(button_frame, text="Stop", command=self.stop_processing, state=DISABLED)
@@ -371,7 +372,7 @@ class GmailOAuthGUI:
     
     def setup_log_section(self, parent):
         """Setup logging section"""
-        log_frame = ttk.LabelFrame(parent, text="Log", padding="10")
+        log_frame = ttk.LabelFrame(parent, text="Log", padding="6")
         log_frame.grid(row=4, column=0, sticky=(W, E, N, S), pady=(0, 0))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
@@ -383,7 +384,7 @@ class GmailOAuthGUI:
         log_text_frame.columnconfigure(0, weight=1)
         log_text_frame.rowconfigure(0, weight=1)
         
-        self.log_text = Text(log_text_frame, height=10, wrap=WORD)
+        self.log_text = Text(log_text_frame, height=8, wrap=WORD)
         self.log_text.grid(row=0, column=0, sticky=(W, E, N, S))
         
         log_scrollbar = ttk.Scrollbar(log_text_frame, orient=VERTICAL, command=self.log_text.yview)

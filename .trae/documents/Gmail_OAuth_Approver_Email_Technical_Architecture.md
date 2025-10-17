@@ -49,46 +49,54 @@ graph TD
 
 ## 2. Technology Description
 
-- **Frontend**: Python Tkinter GUI (existing) + enhanced configuration panels
-- **Backend**: Python asyncio-based automation with Playwright
-- **Email Access**: IMAP/POP3 clients + Gmail API integration
-- **Browser Automation**: Playwright with enhanced session management
-- **Configuration**: JSON-based configuration with encrypted credential storage
+* **Frontend**: Python Tkinter GUI (existing) + enhanced configuration panels
+
+* **Backend**: Python asyncio-based automation with Playwright
+
+* **Email Access**: IMAP/POP3 clients + Gmail API integration
+
+* **Browser Automation**: Playwright with enhanced session management
+
+* **Configuration**: JSON-based configuration with encrypted credential storage
 
 ## 3. Route Definitions
 
-| Route | Purpose |
-|-------|---------|
-| /config/approver | Approver account configuration interface |
-| /verification/detect | Real-time verification detection endpoint |
-| /approver/trigger | Approver email process initiation |
-| /approver/status | Approver process status monitoring |
-| /verification/complete | Verification completion callback |
+| Route                  | Purpose                                   |
+| ---------------------- | ----------------------------------------- |
+| /config/approver       | Approver account configuration interface  |
+| /verification/detect   | Real-time verification detection endpoint |
+| /approver/trigger      | Approver email process initiation         |
+| /approver/status       | Approver process status monitoring        |
+| /verification/complete | Verification completion callback          |
 
 ## 4. API Definitions
 
 ### 4.1 Core API
 
 **Approver Account Configuration**
+
 ```
 POST /api/approver/configure
 ```
 
 Request:
-| Param Name | Param Type | isRequired | Description |
-|------------|------------|------------|-------------|
-| email | string | true | Approver email address |
-| password | string | true | Approver email password |
-| email_provider | string | true | Email provider (gmail, outlook, etc.) |
-| verification_timeout | integer | false | Timeout in seconds (default: 300) |
+
+| Param Name            | Param Type | isRequired | Description                           |
+| --------------------- | ---------- | ---------- | ------------------------------------- |
+| email                 | string     | true       | Approver email address                |
+| password              | string     | true       | Approver email password               |
+| email\_provider       | string     | true       | Email provider (gmail, outlook, etc.) |
+| verification\_timeout | integer    | false      | Timeout in seconds (default: 300)     |
 
 Response:
-| Param Name | Param Type | Description |
-|------------|------------|-------------|
-| success | boolean | Configuration status |
-| test_result | object | Connection test results |
+
+| Param Name   | Param Type | Description             |
+| ------------ | ---------- | ----------------------- |
+| success      | boolean    | Configuration status    |
+| test\_result | object     | Connection test results |
 
 Example:
+
 ```json
 {
   "email": "approver@example.com",
@@ -99,36 +107,41 @@ Example:
 ```
 
 **Verification Detection**
+
 ```
 POST /api/verification/detect
 ```
 
 Request:
-| Param Name | Param Type | isRequired | Description |
-|------------|------------|------------|-------------|
-| primary_email | string | true | Primary account email |
-| current_url | string | true | Current browser URL |
-| page_content | string | true | Page content for analysis |
+
+| Param Name     | Param Type | isRequired | Description               |
+| -------------- | ---------- | ---------- | ------------------------- |
+| primary\_email | string     | true       | Primary account email     |
+| current\_url   | string     | true       | Current browser URL       |
+| page\_content  | string     | true       | Page content for analysis |
 
 Response:
-| Param Name | Param Type | Description |
-|------------|------------|-------------|
-| verification_required | boolean | Whether verification is needed |
-| verification_type | string | Type of verification (email, 2fa, etc.) |
-| approver_triggered | boolean | Whether approver process was started |
+
+| Param Name             | Param Type | Description                             |
+| ---------------------- | ---------- | --------------------------------------- |
+| verification\_required | boolean    | Whether verification is needed          |
+| verification\_type     | string     | Type of verification (email, 2fa, etc.) |
+| approver\_triggered    | boolean    | Whether approver process was started    |
 
 **Approver Process Status**
+
 ```
 GET /api/approver/status/{session_id}
 ```
 
 Response:
-| Param Name | Param Type | Description |
-|------------|------------|-------------|
-| status | string | Current status (searching, found, completing, done) |
-| progress | integer | Progress percentage |
-| verification_found | boolean | Whether verification email was found |
-| completion_status | string | Verification completion status |
+
+| Param Name          | Param Type | Description                                         |
+| ------------------- | ---------- | --------------------------------------------------- |
+| status              | string     | Current status (searching, found, completing, done) |
+| progress            | integer    | Progress percentage                                 |
+| verification\_found | boolean    | Whether verification email was found                |
+| completion\_status  | string     | Verification completion status                      |
 
 ## 5. Server Architecture Diagram
 
@@ -235,6 +248,7 @@ erDiagram
 ### 6.2 Data Definition Language
 
 **Approver Account Table**
+
 ```sql
 -- Create approver accounts table
 CREATE TABLE approver_accounts (
@@ -300,6 +314,7 @@ INSERT INTO approver_accounts (email, encrypted_password, email_provider, verifi
 ```
 
 **Configuration Schema**
+
 ```json
 {
   "approver_accounts": [
@@ -337,3 +352,4 @@ INSERT INTO approver_accounts (email, encrypted_password, email_provider, verifi
   }
 }
 ```
+

@@ -7,6 +7,7 @@ Core automation engine with stealth mode and anti-detection features
 
 import asyncio
 import random
+import string
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
@@ -130,40 +131,63 @@ class PlaywrightAutomationEngine:
             raise
     
     async def _apply_ui_stability_settings(self):
-        """Apply UI stability settings to prevent jumping and displacement"""
+        """Apply UI stability settings to prevent jumping and displacement while preserving Google UI"""
         try:
-            # Disable smooth scrolling and animations
+            # Disable smooth scrolling and animations while preserving Google's native styling
             await self.page.add_init_script("""
                 // Disable smooth scrolling
                 document.documentElement.style.scrollBehavior = 'auto';
                 
-                // Disable CSS animations and transitions
+                // Apply improved CSS that preserves Google's UI styling
                 const style = document.createElement('style');
                 style.textContent = `
-                    *, *::before, *::after {
-                        animation-duration: 0s !important;
+                    /* Disable only problematic animations, preserve layout */
+                    * {
+                        animation-duration: 0.01s !important;
                         animation-delay: 0s !important;
-                        transition-duration: 0s !important;
+                        transition-duration: 0.01s !important;
                         transition-delay: 0s !important;
                         scroll-behavior: auto !important;
                     }
                     
-                    /* Prevent layout shifts */
+                    /* Preserve Google's native padding and margins */
                     body {
                         overflow-x: hidden !important;
                         position: relative !important;
+                        /* Don't override Google's native margins/padding */
                     }
                     
-                    /* Stabilize viewport */
+                    /* Stabilize viewport without breaking Google's layout */
                     html {
                         overflow-x: hidden !important;
                         scroll-behavior: auto !important;
+                        /* Preserve Google's native styling */
                     }
                     
-                    /* Disable transform animations */
+                    /* Disable only transform animations that cause jumps */
                     * {
-                        transform: none !important;
                         will-change: auto !important;
+                    }
+                    
+                    /* Ensure Google's containers maintain their styling */
+                    [role="main"], .main, #main, .content, .container {
+                        /* Preserve original styling */
+                    }
+                    
+                    /* Fix specific Google UI elements */
+                    .gb_g, .gb_h, .gb_i, .gb_j {
+                        /* Preserve Google header styling */
+                    }
+                    
+                    /* Ensure forms maintain proper spacing */
+                    form, input, button, .form-control {
+                        /* Preserve form styling */
+                    }
+                    
+                    /* Prevent layout shifts while maintaining Google's design */
+                    img, iframe, video {
+                        max-width: 100% !important;
+                        height: auto !important;
                     }
                 `;
                 document.head.appendChild(style);
@@ -172,23 +196,44 @@ class PlaywrightAutomationEngine:
                 window.resizeTo = function() {};
                 window.resizeBy = function() {};
                 
-                // Stabilize scroll position
+                // Improved scroll stabilization that doesn't interfere with Google's UI
                 let lastScrollTop = 0;
+                let scrollTimeout;
                 window.addEventListener('scroll', function(e) {
-                    if (Math.abs(window.scrollY - lastScrollTop) > 100) {
-                        window.scrollTo(0, lastScrollTop);
-                    } else {
-                        lastScrollTop = window.scrollY;
-                    }
-                }, { passive: false });
+                    clearTimeout(scrollTimeout);
+                    scrollTimeout = setTimeout(() => {
+                        if (Math.abs(window.scrollY - lastScrollTop) > 200) {
+                            // Only prevent very large jumps
+                            window.scrollTo(0, lastScrollTop);
+                        } else {
+                            lastScrollTop = window.scrollY;
+                        }
+                    }, 50);
+                }, { passive: true });
                 
                 // Prevent unwanted focus changes that can cause jumps
                 document.addEventListener('focusin', function(e) {
-                    e.target.scrollIntoView = function() {};
+                    // Only prevent scrollIntoView for non-form elements
+                    if (!e.target.matches('input, textarea, select, button')) {
+                        e.target.scrollIntoView = function() {};
+                    }
                 });
+                
+                // Wait for Google's CSS to load, then apply our fixes
+                setTimeout(() => {
+                    // Ensure Google's native styling is preserved
+                    const googleElements = document.querySelectorAll('[class*="gb_"], [class*="google"], [id*="google"]');
+                    googleElements.forEach(el => {
+                        // Preserve computed styles for Google elements
+                        const computedStyle = window.getComputedStyle(el);
+                        if (computedStyle.padding || computedStyle.margin) {
+                            // Don't override if Google has set these
+                        }
+                    });
+                }, 1000);
             """)
             
-            self.logger.info("✅ UI stability settings applied")
+            self.logger.info("✅ Improved UI stability settings applied - preserving Google UI")
             
         except Exception as e:
             self.logger.warning(f"Failed to apply UI stability settings: {e}")

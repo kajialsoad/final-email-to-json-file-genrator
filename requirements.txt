@@ -10,3 +10,7 @@ python-dotenv
 
 # HTTP and networking
 requests
+
+# Selenium (optional)
+selenium
+webdriver-manager

@@ -17,29 +17,39 @@ class BrowserConfig:
     """Browser configuration settings"""
     headless: bool = False
     stealth_mode: bool = True
-    user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    viewport_width: int = 1366
-    viewport_height: int = 768
-    timeout: int = 30000  # 30 seconds
-    navigation_timeout: int = 60000  # 60 seconds
-    slow_mo: int = 50  # Reduced for better performance
-    window_position_x: int = 100  # Fixed window position
-    window_position_y: int = 100  # Fixed window position
-    disable_animations: bool = True  # Disable animations for stability
-    force_device_scale_factor: float = 1.0  # Fixed scaling
+    viewport_width: int = 1366  # Better compatibility with Google's responsive design
+    viewport_height: int = 768   # Standard laptop resolution
+    user_agent: str = ""
+    timeout: int = 60000  # Increased from 30000 to 60000 (60 seconds)
+    navigation_timeout: int = 90000  # Increased from 60000 to 90000 (90 seconds)
+    slow_mo: int = 0
+    devtools: bool = False
+    disable_web_security: bool = False
+    ignore_https_errors: bool = True
+    window_position_x: int = 100  # X position for browser window
+    window_position_y: int = 100  # Y position for browser window
+    force_device_scale_factor: float = 1.0  # Device scale factor for high DPI displays
+    disable_animations: bool = False  # Allow minimal animations for better Google UI compatibility
+    # Optional browser channel (e.g., "chrome", "chrome-beta", "msedge")
+    browser_channel: str = ""
+    # Use persistent (non-incognito) context to retain cookies/storage
+    use_persistent_context: bool = False
     
 @dataclass
 class AutomationConfig:
     """Automation behavior settings"""
     max_retries: int = 3
-    retry_delay: float = 2.0
-    human_delay_min: float = 0.5
-    human_delay_max: float = 2.0
+    retry_delay: float = 3.0  # Increased from 2.0 to 3.0
+    human_delay_min: float = 1.0  # Increased from 0.5 to 1.0
+    human_delay_max: float = 3.0  # Increased from 2.0 to 3.0
     typing_delay_min: int = 50
     typing_delay_max: int = 150
     screenshot_on_error: bool = True
     screenshot_on_success: bool = False
     concurrent_limit: int = 3
+    project_creation_timeout: int = 120000  # New: 2 minutes for project creation
+    project_selection_timeout: int = 60000   # New: 1 minute for project selection
+    api_enablement_timeout: int = 90000      # New: 1.5 minutes for API enablement
     
 @dataclass
 class PathConfig:
@@ -69,7 +79,7 @@ class SecurityConfig:
     proxy_url: str = ""
     disable_images: bool = False
     disable_javascript: bool = False
-    block_ads: bool = True
+    block_ads: bool = False
 
 @dataclass
 class ApproverConfig:
@@ -224,8 +234,8 @@ class ConfigManager:
             args.append('--blink-settings=imagesEnabled=false')
         
         if self.security.block_ads:
+            # Keep timer throttling off for stability, but allow networking
             args.extend([
-                '--disable-background-networking',
                 '--disable-background-timer-throttling'
             ])
         
@@ -233,11 +243,18 @@ class ConfigManager:
         if self.security.use_proxy and self.security.proxy_url:
             args.append(f'--proxy-server={self.security.proxy_url}')
         
-        return {
+        opts: Dict[str, Any] = {
             'headless': self.browser.headless,
             'args': args,
-            'slow_mo': self.browser.slow_mo if not self.browser.headless else 0
+            'slow_mo': self.browser.slow_mo if not self.browser.headless else 0,
+            'devtools': self.browser.devtools
         }
+
+        # Use installed browser channel if specified (e.g., Google Chrome)
+        if self.browser.browser_channel:
+            opts['channel'] = self.browser.browser_channel
+
+        return opts
     
     def get_page_options(self) -> Dict[str, Any]:
         """Get page configuration options"""
@@ -382,6 +399,17 @@ def apply_env_overrides():
             config.browser.timeout = int(os.getenv('TIMEOUT'))
         except ValueError:
             pass
+
+    # Prefer a specific browser channel (e.g., chrome)
+    if os.getenv('BROWSER_CHANNEL'):
+        config.browser.browser_channel = os.getenv('BROWSER_CHANNEL')
+    
+    # Switch to persistent (non-incognito) browser context
+    if os.getenv('USE_PERSISTENT_CONTEXT'):
+        try:
+            config.browser.use_persistent_context = os.getenv('USE_PERSISTENT_CONTEXT').lower() in ['true', '1', 'yes']
+        except Exception:
+            pass
     
     # Automation settings
     if os.getenv('MAX_RETRIES'):
@@ -402,6 +430,13 @@ def apply_env_overrides():
     
     if os.getenv('LOGS_DIR'):
         config.paths.logs_dir = os.getenv('LOGS_DIR')
+
+    # Security settings
+    if os.getenv('BLOCK_ADS'):
+        try:
+            config.security.block_ads = os.getenv('BLOCK_ADS').lower() in ['true','1','yes']
+        except Exception:
+            pass
 
 # Apply environment overrides on import
 apply_env_overrides()
