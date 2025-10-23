@@ -1,0 +1,17 @@
+{
+  "export_timestamp": "2025-10-23T04:59:38.392515",
+  "session_duration": 28.122228622436523,
+  "total_metrics": 0,
+  "operation_stats": {},
+  "recent_metrics": [],
+  "performance_thresholds": {
+    "click": 5.0,
+    "fill": 3.0,
+    "navigate": 10.0,
+    "wait_for_element": 8.0,
+    "challenge_detection": 2.0,
+    "stealth_operation": 4.0
+  },
+  "slow_operations": [],
+  "unreliable_operations": []
+}

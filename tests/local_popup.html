@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Google Cloud - Test Popup</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f5f7fa; }
+    .popup { width: 720px; margin: 40px auto; background: white; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.15); }
+    .header { padding: 16px 20px; border-bottom: 1px solid #e6e9ef; font-size: 18px; font-weight: 600; }
+    .content { padding: 20px; }
+    .row { margin: 12px 0; }
+    label { display: block; margin-bottom: 6px; color: #333; }
+    select, button { height: 36px; border-radius: 4px; }
+    select { width: 100%; border: 1px solid #cbd1dc; padding: 6px 8px; }
+    .tos { padding: 12px; border: 1px solid #e6e9ef; border-radius: 6px; background: #fafbfc; }
+    .actions { text-align: right; padding: 16px 20px; border-top: 1px solid #e6e9ef; }
+    .agree { background: #1a73e8; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; }
+    .agree[disabled] { background: #9db8e6; cursor: not-allowed; }
+    .aria-box { display: inline-block; padding: 8px 12px; border: 1px solid #cbd1dc; border-radius: 4px; cursor: pointer; }
+    .aria-box[aria-checked="true"] { background: #e6f0ff; border-color: #1a73e8; }
+  </style>
+</head>
+<body>
+  <div class="popup" role="dialog" aria-label="Google Cloud Welcome">
+    <div class="header">Google Cloud</div>
+    <div class="content">
+      <div class="row">
+        <label for="country-select">Country</label>
+        <select id="country-select" name="country">
+          <option value="Bangladesh" selected>Bangladesh</option>
+          <option value="United States">United States</option>
+          <option value="India">India</option>
+          <option value="Canada">Canada</option>
+        </select>
+      </div>
+
+      <div class="row tos">
+        <div class="row" aria-label="Terms of Service">Terms of Service</div>
+        <label><input type="checkbox" id="tos-checkbox" name="agree_tos" /> I agree to the Google Cloud Platform Terms of Service</label>
+        <div class="row">
+          <div class="aria-box" role="checkbox" aria-checked="false" aria-label="I agree checkbox">I agree</div>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="agree" id="agree-btn" disabled>Agree and continue</button>
+    </div>
+  </div>
+
+  <script>
+    // Enable button when either checkbox is checked
+    const tosCheckbox = document.getElementById('tos-checkbox');
+    const ariaBox = document.querySelector('.aria-box');
+    const agreeBtn = document.getElementById('agree-btn');
+    window.__clickedAgreement = false;
+
+    function updateButton() {
+      const checked = tosCheckbox.checked || ariaBox.getAttribute('aria-checked') === 'true';
+      agreeBtn.disabled = !checked;
+    }
+
+    tosCheckbox.addEventListener('change', updateButton);
+    ariaBox.addEventListener('click', () => {
+      const current = ariaBox.getAttribute('aria-checked') === 'true';
+      ariaBox.setAttribute('aria-checked', String(!current));
+      updateButton();
+    });
+
+    agreeBtn.addEventListener('click', () => {
+      window.__clickedAgreement = true;
+      agreeBtn.textContent = 'Proceeding...';
+    });
+
+    // Initial state
+    updateButton();
+  </script>
+</body>
+</html>

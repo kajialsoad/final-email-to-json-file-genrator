@@ -1,0 +1,66 @@
+{
+  "timestamp": "2025-10-19 02:24:03",
+  "total_duration": 11.52783727645874,
+  "categories_tested": 7,
+  "categories_passed": 0,
+  "categories_failed": 7,
+  "overall_success": false,
+  "category_details": {
+    "unit": {
+      "description": "Unit tests for individual components",
+      "success": false,
+      "duration": 1.9648871421813965,
+      "test_count": 0,
+      "passed_count": 0,
+      "failed_count": 0
+    },
+    "integration": {
+      "description": "Integration tests for component interactions",
+      "success": false,
+      "duration": 1.5897912979125977,
+      "test_count": 0,
+      "passed_count": 0,
+      "failed_count": 0
+    },
+    "e2e": {
+      "description": "End-to-end tests for complete workflows",
+      "success": false,
+      "duration": 1.565014362335205,
+      "test_count": 0,
+      "passed_count": 0,
+      "failed_count": 0
+    },
+    "performance": {
+      "description": "Performance and reliability tests",
+      "success": false,
+      "duration": 1.567098617553711,
+      "test_count": 0,
+      "passed_count": 0,
+      "failed_count": 0
+    },
+    "automation": {
+      "description": "Tests related to automation detection",
+      "success": false,
+      "duration": 1.6174495220184326,
+      "test_count": 0,
+      "passed_count": 0,
+      "failed_count": 0
+    },
+    "fallback": {
+      "description": "Tests for fallback strategies",
+      "success": false,
+      "duration": 1.5986127853393555,
+      "test_count": 0,
+      "passed_count": 0,
+      "failed_count": 0
+    },
+    "error_handling": {
+      "description": "Tests for error handling mechanisms",
+      "success": false,
+      "duration": 1.557058572769165,
+      "test_count": 0,
+      "passed_count": 0,
+      "failed_count": 0
+    }
+  }
+}
