@@ -46,6 +46,7 @@ class PlaywrightAutomationEngine:
         self.page: Optional[Page] = None
         self.playwright = None
         self.session_id = str(uuid.uuid4())[:8]
+        self.user_data_dir: Optional[Path] = None
         
         # Create directories
         self.screenshots_dir = Path(self.config.paths.screenshots_dir)
@@ -67,8 +68,8 @@ class PlaywrightAutomationEngine:
             # Get browser configuration
             browser_args = self.config.get_browser_args()
             
-            # Launch browser
-            self.browser = await self.playwright.chromium.launch(**browser_args)
+            # Determine if we should use a persistent (normal-mode) context
+            use_persistent = getattr(self.config.browser, 'use_persistent_context', False)
             
             # Create context with stealth settings and UI stability
             context_options = {
@@ -101,16 +102,34 @@ class PlaywrightAutomationEngine:
             if not self.config.browser.headless:
                 context_options['accept_downloads'] = True
             
-            self.context = await self.browser.new_context(**context_options)
+            if use_persistent:
+                # Normal mode (non-incognito) via persistent context
+                base_dir = Path(self.config.paths.temp_dir) / 'browser_profiles'
+                base_dir.mkdir(parents=True, exist_ok=True)
+                # Create a fresh profile per session to keep normal mode without reusing old cookies
+                self.user_data_dir = base_dir / f'session_{self.session_id}'
+                self.user_data_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Merge launch and context options for persistent launch
+                persistent_opts = {**browser_args, **context_options}
+                self.logger.info(f"Launching Chrome in NORMAL mode (persistent context) - profile: {self.user_data_dir}")
+                self.context = await self.playwright.chromium.launch_persistent_context(str(self.user_data_dir), **persistent_opts)
+                # In persistent mode, self.browser is not used
+                try:
+                    self.page = self.context.pages[0] if len(self.context.pages) > 0 else await self.context.new_page()
+                except Exception:
+                    self.page = await self.context.new_page()
+            else:
+                # Standard ephemeral context (Playwright default)
+                self.browser = await self.playwright.chromium.launch(**browser_args)
+                self.context = await self.browser.new_context(**context_options)
+                self.page = await self.context.new_page()
             
             # Apply stealth mode
             if self.config.browser.stealth_mode and HAS_STEALTH:
                 await stealth_async(self.context)
             elif self.config.browser.stealth_mode and not HAS_STEALTH:
                 self.logger.warning("Stealth mode requested but playwright-stealth not installed")
-            
-            # Create page
-            self.page = await self.context.new_page()
             
             # Configure page timeouts
             page_options = self.config.get_page_options()
@@ -135,102 +154,84 @@ class PlaywrightAutomationEngine:
         try:
             # Disable smooth scrolling and animations while preserving Google's native styling
             await self.page.add_init_script("""
-                // Disable smooth scrolling
-                document.documentElement.style.scrollBehavior = 'auto';
-                
-                // Apply improved CSS that preserves Google's UI styling
-                const style = document.createElement('style');
-                style.textContent = `
-                    /* Disable only problematic animations, preserve layout */
-                    * {
-                        animation-duration: 0.01s !important;
-                        animation-delay: 0s !important;
-                        transition-duration: 0.01s !important;
-                        transition-delay: 0s !important;
-                        scroll-behavior: auto !important;
-                    }
-                    
-                    /* Preserve Google's native padding and margins */
-                    body {
-                        overflow-x: hidden !important;
-                        position: relative !important;
-                        /* Don't override Google's native margins/padding */
-                    }
-                    
-                    /* Stabilize viewport without breaking Google's layout */
-                    html {
-                        overflow-x: hidden !important;
-                        scroll-behavior: auto !important;
-                        /* Preserve Google's native styling */
-                    }
-                    
-                    /* Disable only transform animations that cause jumps */
-                    * {
-                        will-change: auto !important;
-                    }
-                    
-                    /* Ensure Google's containers maintain their styling */
-                    [role="main"], .main, #main, .content, .container {
-                        /* Preserve original styling */
-                    }
-                    
-                    /* Fix specific Google UI elements */
-                    .gb_g, .gb_h, .gb_i, .gb_j {
-                        /* Preserve Google header styling */
-                    }
-                    
-                    /* Ensure forms maintain proper spacing */
-                    form, input, button, .form-control {
-                        /* Preserve form styling */
-                    }
-                    
-                    /* Prevent layout shifts while maintaining Google's design */
-                    img, iframe, video {
-                        max-width: 100% !important;
-                        height: auto !important;
-                    }
-                `;
-                document.head.appendChild(style);
-                
-                // Prevent window resizing
-                window.resizeTo = function() {};
-                window.resizeBy = function() {};
-                
-                // Improved scroll stabilization that doesn't interfere with Google's UI
-                let lastScrollTop = 0;
-                let scrollTimeout;
-                window.addEventListener('scroll', function(e) {
-                    clearTimeout(scrollTimeout);
-                    scrollTimeout = setTimeout(() => {
-                        if (Math.abs(window.scrollY - lastScrollTop) > 200) {
-                            // Only prevent very large jumps
-                            window.scrollTo(0, lastScrollTop);
+                (function(){
+                    // Safely set scroll behavior once DOM is ready
+                    try {
+                        const setScroll = () => {
+                            const root = document.documentElement || document.getElementsByTagName('html')[0];
+                            if (root && root.style) root.style.scrollBehavior = 'auto';
+                        };
+                        if (document.readyState === 'loading') {
+                            document.addEventListener('DOMContentLoaded', setScroll, { once: true });
                         } else {
-                            lastScrollTop = window.scrollY;
+                            setScroll();
                         }
-                    }, 50);
-                }, { passive: true });
-                
-                // Prevent unwanted focus changes that can cause jumps
-                document.addEventListener('focusin', function(e) {
-                    // Only prevent scrollIntoView for non-form elements
-                    if (!e.target.matches('input, textarea, select, button')) {
-                        e.target.scrollIntoView = function() {};
-                    }
-                });
-                
-                // Wait for Google's CSS to load, then apply our fixes
-                setTimeout(() => {
-                    // Ensure Google's native styling is preserved
-                    const googleElements = document.querySelectorAll('[class*="gb_"], [class*="google"], [id*="google"]');
-                    googleElements.forEach(el => {
-                        // Preserve computed styles for Google elements
-                        const computedStyle = window.getComputedStyle(el);
-                        if (computedStyle.padding || computedStyle.margin) {
-                            // Don't override if Google has set these
-                        }
-                    });
-                }, 1000);
+                    } catch (e) {}
+                    
+                    // Apply improved CSS that preserves Google's UI styling
+                    try {
+                        const style = document.createElement('style');
+                        style.textContent = `
+                            /* Disable only problematic animations, preserve layout */
+                            * {
+                                animation-duration: 0.01s !important;
+                                animation-delay: 0s !important;
+                                transition-duration: 0.01s !important;
+                                transition-delay: 0s !important;
+                                scroll-behavior: auto !important;
+                            }
+                            
+                            /* Preserve Google's native padding and margins */
+                            body {
+                                overflow-x: hidden !important;
+                                position: relative !important;
+                            }
+                            
+                            /* Stabilize viewport without breaking Google's layout */
+                            html {
+                                overflow-x: hidden !important;
+                                scroll-behavior: auto !important;
+                            }
+                            
+                            /* Disable only transform animations that cause jumps */
+                            * {
+                                will-change: auto !important;
+                            }
+                            
+                            /* Ensure Google's containers maintain their styling */
+                            [role="main"], .main, #main, .content, .container {
+                            }
+                            
+                            /* Fix specific Google UI elements */
+                            .gb_g, .gb_h, .gb_i, .gb_j {
+                            }
+                            
+                            /* Ensure forms maintain proper spacing */
+                            form, input, button, .form-control {
+                            }
+                            
+                            /* Prevent layout shifts while maintaining Google's design */
+                            img, iframe, video {
+                                max-width: 100% !important;
+                                height: auto !important;
+                            }
+                        `;
+                        try { (document.head || document.documentElement).appendChild(style); } catch (e) {}
+                    } catch (e) {}
+                    
+                    // Preserve Google's native styling without touching null elements
+                    setTimeout(() => {
+                        try {
+                            const googleElements = document.querySelectorAll('[class*="gb_"], [class*="google"], [id*="google"]');
+                            googleElements.forEach(el => {
+                                const computedStyle = window.getComputedStyle(el);
+                                if (computedStyle.padding || computedStyle.margin) {
+                                    // Don't override if Google has set these
+                                }
+                            });
+                        } catch (e) {}
+                    }, 1000);
+                })();
             """)
             
             self.logger.info("✅ Improved UI stability settings applied - preserving Google UI")
@@ -779,7 +780,7 @@ class PlaywrightAutomationEngine:
                 
         except Exception as e:
             log_error(e, "_detect_unusual_activity_challenges")
-    
+
     async def _detect_speedbump_verification(self, challenges: Dict[str, bool], page_text: str, current_url: str):
         """Detect Google speedbump verification popup (গুরুত্বপূর্ণ তথ্য popup with আমি বুঝি button)"""
         try:
@@ -796,7 +797,7 @@ class PlaywrightAutomationEngine:
                 'আমি বুঝি',  # "I understand" in Bengali
                 'গুরুত্বপূর্ণ তথ্য',  # "Important information" in Bengali
                 'আপনার অ্যাকাউন্ট',  # "Your account" in Bengali
-                'নিরাপত্তা',  # "Security" in Bengali
+                'নিরাপত্তा',  # "Security" in Bengali
                 'যাচাইকরণ'  # "Verification" in Bengali
             ]
             
@@ -928,6 +929,14 @@ class PlaywrightAutomationEngine:
                 await self.browser.close()
             if self.playwright:
                 await self.playwright.stop()
+            
+            # Remove the temporary persistent profile after run if requested
+            try:
+                if self.user_data_dir and getattr(self.config.security, 'clear_browser_data', True):
+                    import shutil
+                    shutil.rmtree(self.user_data_dir, ignore_errors=True)
+            except Exception:
+                pass
             
             self.logger.info("🧹 Browser cleanup completed")
             

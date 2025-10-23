@@ -33,7 +33,7 @@ class BrowserConfig:
     # Optional browser channel (e.g., "chrome", "chrome-beta", "msedge")
     browser_channel: str = ""
     # Use persistent (non-incognito) context to retain cookies/storage
-    use_persistent_context: bool = False
+    use_persistent_context: bool = True
     
 @dataclass
 class AutomationConfig:

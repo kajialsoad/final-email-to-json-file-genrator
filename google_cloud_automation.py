@@ -1053,7 +1053,6 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 'input[aria-label*="project name"]',
                 'label:has-text("Project name") ~ input',
                 'label:has-text("Project name") + input',
-                'input[name="projectId"]',
                 'input[name="name"]',
                 'input[id*="project"]',
                 'input[placeholder*="Project"]',
@@ -1156,6 +1155,48 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             
             await self.human_delay(1, 2)
             
+            # Fill Project ID deterministically based on project_name
+            try:
+                import re
+                from datetime import datetime
+                base_id = re.sub(r'[^a-z0-9-]', '-', project_name.lower())
+                base_id = re.sub(r'-{2,}', '-', base_id).strip('-')
+                if not re.match(r'^[a-z]', base_id):
+                    base_id = f"p-{base_id}"
+                project_id = base_id[:30] if len(base_id) > 0 else f"p-{int(datetime.now().timestamp())}"
+                # Store for later direct navigation and OAuth flow
+                try:
+                    self.current_project_id = project_id
+                except Exception:
+                    pass
+                project_id_selectors = [
+                    'input[aria-label*="Project ID"]',
+                    'input[name="projectId"]',
+                    'label:has-text("Project ID") ~ input',
+                    'label:has-text("Project ID") + input',
+                    '.mat-mdc-form-field:has-text("Project ID") input'
+                ]
+                for sel in project_id_selectors:
+                    try:
+                        await self.page.wait_for_selector(sel, timeout=2500)
+                        locator = self.page.locator(sel)
+                        await locator.scroll_into_view_if_needed()
+                        await locator.click()
+                        await self.human_delay(0.2, 0.5)
+                        try:
+                            await locator.fill("")
+                        except Exception:
+                            pass
+                        await locator.fill(project_id)
+                        entered = await locator.input_value()
+                        if project_id in entered or entered == project_id:
+                            self.logger.info(f"✅ Project ID entered: {project_id}")
+                            break
+                    except Exception:
+                        continue
+            except Exception as e:
+                self.logger.debug(f"Project ID computation/fill skipped: {str(e)}")
+            
             # Check for validation errors before clicking Create
             validation_error_selectors = [
                 'text="The name must be between 4 and 30 characters"',
@@ -1190,7 +1231,6 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                 # Clear the input field and enter the shorter name
                 project_name_selectors = [
                     'input[type="text"]',
-                    'input[name="projectId"]',
                     'input[name="name"]'
                 ]
                 
@@ -1359,8 +1399,26 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
                     if attempt < 2:
                         await self.human_delay(3, 5)
             
+            # Fallback: navigate directly to APIs dashboard for computed project ID
             if not creation_verified:
-                self.logger.warning("⚠️ Project creation status unclear, but continuing...")
+                try:
+                    import re
+                    # Compute a safe project ID from the name (lowercase, hyphens)
+                    safe_project_id = re.sub(r'[^a-z0-9-]', '', project_name.lower().replace(' ', '-'))
+                    if not re.match(r'^[a-z]', safe_project_id):
+                        safe_project_id = f"p-{safe_project_id}"
+                    safe_project_id = safe_project_id[:30]
+                    target_project_id = getattr(self, 'current_project_id', None) or safe_project_id
+                    self.logger.info(f"🔗 Attempting direct navigation to APIs dashboard for project: {target_project_id}")
+                    if await self.safe_navigate_with_retry(f"https://console.cloud.google.com/apis/dashboard?project={target_project_id}", wait_until="domcontentloaded"):
+                        creation_verified = True
+                        await self.human_delay(3, 5)
+                        await self.take_screenshot("07_project_dashboard_direct")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Direct navigation fallback failed: {str(e)}")
+            
+            if not creation_verified:
+                self.logger.warning("⚠️ Project creation status unclear, proceeding to selection flow...")
             
             # After project creation, ensure the project is selected
             await self._ensure_project_selected(project_name)
@@ -1377,6 +1435,20 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
         """Ensure the newly created project is selected in Google Cloud Console"""
         try:
             self.logger.info(f"🎯 Ensuring project '{project_name}' is selected...")
+            
+            # Try direct navigation to APIs dashboard for computed project ID first
+            try:
+                import re
+                safe_project_id = re.sub(r'[^a-z0-9-]', '', project_name.lower().replace(' ', '-'))
+                if not re.match(r'^[a-z]', safe_project_id):
+                    safe_project_id = f"p-{safe_project_id}"
+                safe_project_id = safe_project_id[:30]
+                target_project_id = getattr(self, 'current_project_id', None) or safe_project_id
+                self.logger.info(f"🔗 Ensuring selection by navigating to dashboard for: {target_project_id}")
+                await self.safe_navigate_with_retry(f"https://console.cloud.google.com/apis/dashboard?project={target_project_id}", wait_until="domcontentloaded")
+                await self.human_delay(2, 3)
+            except Exception as e:
+                self.logger.debug(f"Direct selection navigation failed: {str(e)}")
             
             # Take screenshot to see current state
             await self.take_screenshot("07_before_project_selection")
@@ -1891,7 +1963,16 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             self.logger.info("🔒 Setting up OAuth consent screen...")
             
             # Navigate to OAuth consent screen
-            await self.page.goto("https://console.cloud.google.com/apis/credentials/consent")
+            try:
+                target_project_id = getattr(self, 'current_project_id', None)
+                url = (
+                    f"https://console.cloud.google.com/apis/credentials/consent?project={target_project_id}"
+                    if target_project_id else
+                    "https://console.cloud.google.com/apis/credentials/consent"
+                )
+                await self.page.goto(url)
+            except Exception:
+                await self.page.goto("https://console.cloud.google.com/apis/credentials/consent")
             await self.wait_for_navigation()
             await self.take_screenshot("09_oauth_consent")
             
@@ -2016,7 +2097,16 @@ class GoogleCloudAutomation(PlaywrightAutomationEngine):
             self.logger.info("🔑 Creating OAuth 2.0 credentials...")
             
             # Navigate to credentials page
-            await self.page.goto("https://console.cloud.google.com/apis/credentials")
+            try:
+                target_project_id = getattr(self, 'current_project_id', None)
+                url = (
+                    f"https://console.cloud.google.com/apis/credentials?project={target_project_id}"
+                    if target_project_id else
+                    "https://console.cloud.google.com/apis/credentials"
+                )
+                await self.page.goto(url)
+            except Exception:
+                await self.page.goto("https://console.cloud.google.com/apis/credentials")
             await self.wait_for_navigation()
             await self.take_screenshot("11_credentials_page")
             
