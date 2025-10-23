@@ -59,69 +59,98 @@ class PlaywrightAutomationEngine:
         
     @retry_async(context="browser_initialization")
     async def initialize_browser(self) -> bool:
-        """Initialize Playwright browser with stealth and anti-detection"""
+        """Initialize Playwright browser with enhanced anti-detection"""
         try:
-            self.logger.info("Initializing Playwright browser...")
+            self.logger.info("🚀 Initializing browser with enhanced anti-detection...")
             
+            # Start Playwright
             self.playwright = await async_playwright().start()
             
-            # Get browser configuration
-            browser_args = self.config.get_browser_args()
+            # Get randomized configuration
+            user_agent = self.config.browser.get_random_user_agent()
+            viewport_width, viewport_height = self.config.browser.get_random_viewport()
             
-            # Determine if we should use a persistent (normal-mode) context
-            use_persistent = getattr(self.config.browser, 'use_persistent_context', False)
+            self.logger.info(f"🎭 Using randomized user agent: {user_agent[:50]}...")
+            self.logger.info(f"📐 Using randomized viewport: {viewport_width}x{viewport_height}")
             
-            # Create context with stealth settings and UI stability
+            # Enhanced Chrome browser arguments based on test driver configuration
+            browser_config = self.config.get_browser_args()
+            
+            # Chrome-specific arguments from test driver with additional anti-detection
+            chrome_args = [
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                f'--window-size={viewport_width},{viewport_height}',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-extensions',
+                '--disable-plugins',
+                '--disable-images',
+                '--disable-extensions-file-access-check',
+                '--disable-extensions-http-throttling',
+                '--disable-extensions-https-throttling',
+                '--disable-features=VizDisplayCompositor',
+                '--disable-ipc-flooding-protection',
+                '--disable-renderer-backgrounding',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-field-trial-config',
+                '--disable-back-forward-cache',
+                '--disable-component-cloud-policy',
+                '--disable-client-side-phishing-detection',
+                '--no-zygote',
+                '--disable-gpu-sandbox',
+                '--disable-software-rasterizer',
+                '--disable-background-timer-throttling',
+                '--disable-features=TranslateUI',
+                '--enable-features=NetworkService,NetworkServiceInProcess',
+                '--force-color-profile=srgb',
+                '--metrics-recording-only',
+                '--use-mock-keychain'
+            ]
+            
+            # Update browser config with Chrome-specific arguments
+            browser_config['args'] = chrome_args
+            
+            # Add Chrome-specific experimental options equivalent
+            browser_config['ignore_default_args'] = ['--enable-automation']
+            
+            # Context options with enhanced stealth
             context_options = {
-                'viewport': {
-                    'width': self.config.browser.viewport_width,
-                    'height': self.config.browser.viewport_height
-                },
-                'user_agent': self.config.browser.user_agent,
+                'viewport': {'width': viewport_width, 'height': viewport_height},
+                'user_agent': user_agent,
                 'locale': 'en-US',
                 'timezone_id': 'America/New_York',
-                'permissions': ['geolocation'],
-                'device_scale_factor': self.config.browser.force_device_scale_factor,
-                'is_mobile': False,
-                'has_touch': False,
+                'permissions': ['geolocation', 'notifications'],
                 'color_scheme': 'light',
-                'reduced_motion': 'reduce' if self.config.browser.disable_animations else 'no-preference',
+                'reduced_motion': 'no-preference',
                 'forced_colors': 'none',
-                'extra_http_headers': {
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1',
-                    'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache'
-                }
+                'accept_downloads': True,
+                'ignore_https_errors': self.config.browser.ignore_https_errors,
+                'java_script_enabled': True,
+                'bypass_csp': True,
+                'screen': {
+                    'width': viewport_width + random.randint(100, 300),
+                    'height': viewport_height + random.randint(100, 300)
+                },
+                'device_scale_factor': self.config.browser.force_device_scale_factor + random.uniform(-0.1, 0.1),
+                'has_touch': False,
+                'is_mobile': False
             }
             
-            # Add download path
-            if not self.config.browser.headless:
-                context_options['accept_downloads'] = True
+            # Downloads path is handled separately in browser launch options
             
-            if use_persistent:
-                # Normal mode (non-incognito) via persistent context
-                base_dir = Path(self.config.paths.temp_dir) / 'browser_profiles'
-                base_dir.mkdir(parents=True, exist_ok=True)
-                # Create a fresh profile per session to keep normal mode without reusing old cookies
-                self.user_data_dir = base_dir / f'session_{self.session_id}'
-                self.user_data_dir.mkdir(parents=True, exist_ok=True)
-                
-                # Merge launch and context options for persistent launch
-                persistent_opts = {**browser_args, **context_options}
-                self.logger.info(f"Launching Chrome in NORMAL mode (persistent context) - profile: {self.user_data_dir}")
-                self.context = await self.playwright.chromium.launch_persistent_context(str(self.user_data_dir), **persistent_opts)
-                # In persistent mode, self.browser is not used
-                try:
-                    self.page = self.context.pages[0] if len(self.context.pages) > 0 else await self.context.new_page()
-                except Exception:
-                    self.page = await self.context.new_page()
+            # Initialize browser based on context type
+            if self.config.browser.use_persistent_context and self.user_data_dir:
+                # Persistent context with user data
+                self.context = await self.playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(self.user_data_dir),
+                    **browser_config,
+                    **context_options
+                )
+                self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
             else:
                 # Standard ephemeral context (Playwright default)
-                self.browser = await self.playwright.chromium.launch(**browser_args)
+                self.browser = await self.playwright.chromium.launch(**browser_config)
                 self.context = await self.browser.new_context(**context_options)
                 self.page = await self.context.new_page()
             
@@ -139,16 +168,364 @@ class PlaywrightAutomationEngine:
             # Apply UI stability settings
             await self._apply_ui_stability_settings()
             
-            # Add additional stealth measures
-            await self._apply_stealth_measures()
+            # Add enhanced stealth measures
+            await self._apply_enhanced_stealth_measures()
             
-            self.logger.info("✅ Browser initialized successfully")
+            self.logger.info("✅ Browser initialized successfully with enhanced anti-detection")
             return True
             
         except Exception as e:
             log_error(e, "browser_initialization")
             raise
-    
+
+    async def _apply_enhanced_stealth_measures(self):
+        """Apply enhanced stealth measures to avoid detection"""
+        try:
+            # Generate randomized fingerprint values
+            random_hardware_concurrency = random.choice([2, 4, 6, 8, 12, 16])
+            random_device_memory = random.choice([2, 4, 8, 16, 32])
+            random_max_touch_points = random.choice([0, 1, 5, 10])
+            random_platform = random.choice(['Win32', 'MacIntel', 'Linux x86_64'])
+            
+            # Remove webdriver property and other automation indicators (Chrome-specific)
+            await self.page.add_init_script(f"""
+                // Remove webdriver property completely
+                Object.defineProperty(navigator, 'webdriver', {{
+                    get: () => undefined,
+                }});
+                
+                // Remove automation-related properties
+                delete navigator.__proto__.webdriver;
+                
+                // Mock chrome runtime to appear as real Chrome
+                window.chrome = {{
+                    runtime: {{
+                        onConnect: null,
+                        onMessage: null
+                    }},
+                    loadTimes: function() {{
+                        return {{
+                            requestTime: Date.now() / 1000,
+                            startLoadTime: Date.now() / 1000,
+                            commitLoadTime: Date.now() / 1000,
+                            finishDocumentLoadTime: Date.now() / 1000,
+                            finishLoadTime: Date.now() / 1000,
+                            firstPaintTime: Date.now() / 1000,
+                            firstPaintAfterLoadTime: 0,
+                            navigationType: "Other"
+                        }};
+                    }},
+                    csi: function() {{
+                        return {{
+                            startE: Date.now(),
+                            onloadT: Date.now(),
+                            pageT: Date.now(),
+                            tran: 15
+                        }};
+                    }},
+                    app: {{
+                        isInstalled: false
+                    }}
+                }};
+                
+                // Remove automation extension traces
+                if (window.navigator.chrome && window.navigator.chrome.runtime && window.navigator.chrome.runtime.onConnect) {{
+                    delete window.navigator.chrome.runtime.onConnect;
+                }}
+                
+                // Override automation detection methods
+                Object.defineProperty(window, 'outerHeight', {{
+                    get: () => window.innerHeight,
+                }});
+                Object.defineProperty(window, 'outerWidth', {{
+                    get: () => window.innerWidth,
+                }});
+                
+                // Randomize hardware concurrency
+                Object.defineProperty(navigator, 'hardwareConcurrency', {{
+                    get: () => {random_hardware_concurrency},
+                }});
+                
+                // Randomize device memory
+                Object.defineProperty(navigator, 'deviceMemory', {{
+                    get: () => {random_device_memory},
+                }});
+                
+                // Randomize max touch points
+                Object.defineProperty(navigator, 'maxTouchPoints', {{
+                    get: () => {random_max_touch_points},
+                }});
+                
+                // Randomize platform
+                Object.defineProperty(navigator, 'platform', {{
+                    get: () => '{random_platform}',
+                }});
+                
+                // Mock plugins with realistic data
+                Object.defineProperty(navigator, 'plugins', {{
+                    get: () => [
+                        {{ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }},
+                        {{ name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' }},
+                        {{ name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }}
+                    ],
+                }});
+                
+                // Mock languages with slight variation
+                const languages = [
+                    ['en-US', 'en'],
+                    ['en-US', 'en', 'es'],
+                    ['en-GB', 'en'],
+                    ['en-US', 'en', 'fr']
+                ];
+                Object.defineProperty(navigator, 'languages', {{
+                    get: () => languages[Math.floor(Math.random() * languages.length)],
+                }});
+                
+                // Mock permissions
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({{ state: Notification.permission }}) :
+                        originalQuery(parameters)
+                );
+                
+                // Mock connection with realistic values
+                Object.defineProperty(navigator, 'connection', {{
+                    get: () => ({{
+                        effectiveType: ['slow-2g', '2g', '3g', '4g'][Math.floor(Math.random() * 4)],
+                        rtt: 50 + Math.floor(Math.random() * 100),
+                        downlink: 1 + Math.random() * 10,
+                        saveData: Math.random() > 0.8
+                    }}),
+                }});
+                
+                // Mock battery with realistic values
+                Object.defineProperty(navigator, 'getBattery', {{
+                    get: () => () => Promise.resolve({{
+                        charging: Math.random() > 0.5,
+                        chargingTime: Math.random() > 0.5 ? 0 : Math.floor(Math.random() * 7200),
+                        dischargingTime: Math.random() > 0.5 ? Infinity : Math.floor(Math.random() * 28800),
+                        level: 0.2 + Math.random() * 0.8
+                    }}),
+                }});
+                
+                // Mock media devices
+                Object.defineProperty(navigator.mediaDevices, 'enumerateDevices', {{
+                    get: () => () => Promise.resolve([
+                        {{ deviceId: 'default', kind: 'audioinput', label: 'Default - Microphone' }},
+                        {{ deviceId: 'default', kind: 'audiooutput', label: 'Default - Speaker' }},
+                        {{ deviceId: 'default', kind: 'videoinput', label: 'Default - Camera' }}
+                    ]),
+                }});
+                
+                // Randomize canvas fingerprint
+                const getContext = HTMLCanvasElement.prototype.getContext;
+                HTMLCanvasElement.prototype.getContext = function(type) {{
+                    if (type === '2d') {{
+                        const context = getContext.call(this, type);
+                        const originalFillText = context.fillText;
+                        context.fillText = function(text, x, y, maxWidth) {{
+                            // Add slight randomization to text rendering
+                            const noise = Math.random() * 0.1;
+                            return originalFillText.call(this, text, x + noise, y + noise, maxWidth);
+                        }};
+                        return context;
+                    }}
+                    return getContext.call(this, type);
+                }};
+                
+                // Randomize WebGL fingerprint
+                const getParameter = WebGLRenderingContext.prototype.getParameter;
+                WebGLRenderingContext.prototype.getParameter = function(parameter) {{
+                    // Randomize specific WebGL parameters
+                    if (parameter === 37445) {{ // UNMASKED_VENDOR_WEBGL
+                        const vendors = ['Intel Inc.', 'NVIDIA Corporation', 'AMD', 'Qualcomm'];
+                        return vendors[Math.floor(Math.random() * vendors.length)];
+                    }}
+                    if (parameter === 37446) {{ // UNMASKED_RENDERER_WEBGL
+                        const renderers = [
+                            'Intel Iris OpenGL Engine',
+                            'NVIDIA GeForce GTX 1060',
+                            'AMD Radeon Pro 560',
+                            'Adreno (TM) 640'
+                        ];
+                        return renderers[Math.floor(Math.random() * renderers.length)];
+                    }}
+                    return getParameter.call(this, parameter);
+                }};
+                
+                // Mock screen properties with slight randomization
+                const screenWidth = screen.width + Math.floor(Math.random() * 20) - 10;
+                const screenHeight = screen.height + Math.floor(Math.random() * 20) - 10;
+                
+                Object.defineProperty(screen, 'width', {{
+                    get: () => screenWidth,
+                }});
+                Object.defineProperty(screen, 'height', {{
+                    get: () => screenHeight,
+                }});
+                Object.defineProperty(screen, 'availWidth', {{
+                    get: () => screenWidth - Math.floor(Math.random() * 10),
+                }});
+                Object.defineProperty(screen, 'availHeight', {{
+                    get: () => screenHeight - Math.floor(Math.random() * 10),
+                }});
+                
+                // Add noise to performance.now()
+                const originalNow = performance.now;
+                performance.now = function() {{
+                    return originalNow.call(this) + Math.random() * 0.1;
+                }};
+                
+                // Mock gamepad API
+                Object.defineProperty(navigator, 'getGamepads', {{
+                    get: () => () => [null, null, null, null],
+                }});
+            """)
+            
+            # Add realistic mouse movement patterns
+            if self.config.browser.use_realistic_mouse_movements:
+                await self.page.add_init_script("""
+                    // Override mouse events to add slight randomization
+                    const originalAddEventListener = EventTarget.prototype.addEventListener;
+                    EventTarget.prototype.addEventListener = function(type, listener, options) {
+                        if (type === 'mousemove') {
+                            const wrappedListener = function(event) {
+                                // Add slight delay to mouse movements
+                                setTimeout(() => listener.call(this, event), Math.random() * 5);
+                            };
+                            return originalAddEventListener.call(this, type, wrappedListener, options);
+                        }
+                        return originalAddEventListener.call(this, type, listener, options);
+                    };
+                """)
+            
+            # Log fingerprint data for debugging
+            fingerprint_data = {
+                'user_agent': self.page.context.browser.version if hasattr(self.page.context, 'browser') else 'unknown',
+                'viewport': f"{self.page.viewport_size['width']}x{self.page.viewport_size['height']}" if self.page.viewport_size else 'unknown',
+                'platform': random_platform,
+                'hardware_concurrency': random_hardware_concurrency,
+                'device_memory': random_device_memory,
+                'max_touch_points': random_max_touch_points,
+                'webgl_vendor': 'randomized',
+                'webgl_renderer': 'randomized'
+            }
+            
+            from error_handler import error_handler
+            error_handler.log_browser_fingerprint_status(fingerprint_data)
+            
+            self.logger.debug("✅ Enhanced stealth measures applied with comprehensive fingerprint randomization")
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to apply some stealth measures: {str(e)}")
+            # Log the error for automation detection debugging
+            from error_handler import error_handler
+            error_handler.log_automation_detection(
+                error_str=f"Stealth measures failed: {str(e)}",
+                context_str="method: _apply_enhanced_stealth_measures, error_type: stealth_failure",
+                full_error=str(e)
+            )
+
+    async def human_delay(self, min_seconds: float = None, max_seconds: float = None):
+        """Enhanced human-like delay with randomization"""
+        if min_seconds is None:
+            min_seconds = self.config.automation.human_delay_min
+        if max_seconds is None:
+            max_seconds = self.config.automation.human_delay_max
+            
+        # Add extra randomization if enabled
+        if self.config.browser.randomize_timing:
+            # Occasionally add longer pauses (5% chance)
+            if random.random() < 0.05:
+                min_seconds *= 2
+                max_seconds *= 2
+            # Sometimes add shorter pauses (10% chance)
+            elif random.random() < 0.1:
+                min_seconds *= 0.5
+                max_seconds *= 0.5
+        
+        delay = random.uniform(min_seconds, max_seconds)
+        await asyncio.sleep(delay)
+
+    async def enhanced_click(self, selector: str, timeout: int = None) -> bool:
+        """Enhanced click with human-like behavior"""
+        try:
+            if timeout is None:
+                timeout = self.config.automation.create_button_wait_timeout
+                
+            # Wait for element
+            await self.page.wait_for_selector(selector, timeout=timeout)
+            element = self.page.locator(selector)
+            
+            # Scroll into view if needed
+            await element.scroll_into_view_if_needed()
+            
+            # Add pre-click delay
+            if self.config.browser.randomize_timing:
+                await asyncio.sleep(random.uniform(
+                    self.config.automation.click_delay_min,
+                    self.config.automation.click_delay_max
+                ))
+            
+            # Hover before clicking (more human-like)
+            if self.config.browser.use_realistic_mouse_movements:
+                await element.hover()
+                await asyncio.sleep(random.uniform(0.1, 0.3))
+            
+            # Click with force if needed
+            await element.click(force=True)
+            
+            # Add post-click delay
+            await self.human_delay(0.2, 0.8)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.debug(f"Enhanced click failed for {selector}: {str(e)}")
+            return False
+
+    async def enhanced_fill(self, selector: str, text: str, timeout: int = None) -> bool:
+        """Enhanced form filling with human-like typing"""
+        try:
+            if timeout is None:
+                timeout = self.config.automation.form_load_timeout
+                
+            # Wait for element
+            await self.page.wait_for_selector(selector, timeout=timeout)
+            element = self.page.locator(selector)
+            
+            # Scroll into view and focus
+            await element.scroll_into_view_if_needed()
+            await element.click()
+            
+            # Clear existing content
+            await element.fill("")
+            
+            # Add form fill delay
+            if self.config.browser.randomize_timing:
+                await asyncio.sleep(random.uniform(
+                    self.config.automation.form_fill_delay_min,
+                    self.config.automation.form_fill_delay_max
+                ))
+            
+            # Type with human-like speed if enabled
+            if self.config.browser.vary_typing_speed:
+                for char in text:
+                    await element.type(char)
+                    # Random delay between characters
+                    await asyncio.sleep(random.uniform(0.05, 0.15))
+            else:
+                await element.fill(text)
+            
+            # Verify the text was entered
+            entered_value = await element.input_value()
+            return text in entered_value or entered_value == text
+            
+        except Exception as e:
+            self.logger.debug(f"Enhanced fill failed for {selector}: {str(e)}")
+            return False
+
     async def _apply_ui_stability_settings(self):
         """Apply UI stability settings to prevent jumping and displacement while preserving Google UI"""
         try:
@@ -242,17 +619,50 @@ class PlaywrightAutomationEngine:
     async def _apply_stealth_measures(self):
         """Apply additional stealth and anti-detection measures"""
         try:
-            # Override webdriver property
+            # Override webdriver property (most important)
             await self.page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined,
+                    configurable: true
                 });
             """)
             
-            # Override plugins
+            # Remove automation indicators
+            await self.page.add_init_script("""
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_JSON;
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Object;
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Proxy;
+            """)
+            
+            # Override chrome runtime
+            await self.page.add_init_script("""
+                if (!window.chrome) {
+                    window.chrome = {};
+                }
+                if (!window.chrome.runtime) {
+                    window.chrome.runtime = {
+                        onConnect: undefined,
+                        onMessage: undefined,
+                        connect: function() { return { postMessage: function() {}, onMessage: { addListener: function() {} } }; }
+                    };
+                }
+            """)
+            
+            # Override plugins with realistic data
             await self.page.add_init_script("""
                 Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5],
+                    get: () => {
+                        return {
+                            0: { name: "Chrome PDF Plugin", filename: "internal-pdf-viewer" },
+                            1: { name: "Chrome PDF Viewer", filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai" },
+                            2: { name: "Native Client", filename: "internal-nacl-plugin" },
+                            length: 3
+                        };
+                    },
+                    configurable: true
                 });
             """)
             
@@ -260,18 +670,60 @@ class PlaywrightAutomationEngine:
             await self.page.add_init_script("""
                 Object.defineProperty(navigator, 'languages', {
                     get: () => ['en-US', 'en'],
+                    configurable: true
                 });
             """)
             
             # Override permissions
             await self.page.add_init_script("""
                 const originalQuery = window.navigator.permissions.query;
-                return window.navigator.permissions.query = (parameters) => (
+                window.navigator.permissions.query = (parameters) => (
                     parameters.name === 'notifications' ?
                         Promise.resolve({ state: Notification.permission }) :
                         originalQuery(parameters)
                 );
             """)
+            
+            # Override screen properties to match viewport
+            await self.page.add_init_script(f"""
+                Object.defineProperty(screen, 'width', {{
+                    get: () => {self.config.browser.viewport_width}
+                }});
+                Object.defineProperty(screen, 'height', {{
+                    get: () => {self.config.browser.viewport_height}
+                }});
+                Object.defineProperty(screen, 'availWidth', {{
+                    get: () => {self.config.browser.viewport_width}
+                }});
+                Object.defineProperty(screen, 'availHeight', {{
+                    get: () => {self.config.browser.viewport_height - 40}
+                }});
+            """)
+            
+            # Override automation detection methods
+            await self.page.add_init_script("""
+                // Override common automation detection
+                window.outerHeight = window.innerHeight;
+                window.outerWidth = window.innerWidth;
+                
+                // Mock realistic mouse movements
+                let mouseX = Math.floor(Math.random() * window.innerWidth);
+                let mouseY = Math.floor(Math.random() * window.innerHeight);
+                
+                Object.defineProperty(window, 'screenX', { get: () => 0 });
+                Object.defineProperty(window, 'screenY', { get: () => 0 });
+                
+                // Override toString methods
+                const originalToString = Function.prototype.toString;
+                Function.prototype.toString = function() {
+                    if (this === navigator.webdriver) {
+                        return 'function webdriver() { [native code] }';
+                    }
+                    return originalToString.call(this);
+                };
+            """)
+            
+            self.logger.info("✅ Enhanced stealth measures applied")
             
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to apply some stealth measures: {str(e)}")
@@ -333,18 +785,25 @@ class PlaywrightAutomationEngine:
         
         return False
     
-    async def wait_for_navigation(self, timeout: int = 30000) -> bool:
-        """Wait for page navigation to complete"""
+    async def wait_for_navigation(self, timeout: int = 15000) -> bool:
+        """Wait for page navigation to complete with faster timeout"""
         try:
-            await self.page.wait_for_load_state('networkidle', timeout=timeout)
-            await self.human_delay(1, 2)
+            # Use faster domcontentloaded first, then try networkidle with shorter timeout
+            await self.page.wait_for_load_state('domcontentloaded', timeout=timeout // 2)
+            try:
+                await self.page.wait_for_load_state('networkidle', timeout=timeout // 2)
+            except Exception:
+                # If networkidle fails, continue anyway - page might be functional
+                self.logger.debug("NetworkIdle timeout - continuing with domcontentloaded")
+            
+            await self.human_delay(0.5, 1)  # Reduced delay
             return True
         except Exception as e:
             log_error(e, "wait_for_navigation")
             return False
     
     async def take_screenshot(self, name: str = None, full_page: bool = False) -> str:
-        """Take screenshot for debugging"""
+        """Take screenshot for debugging with optimized timeout"""
         try:
             # Check if page is initialized
             if self.page is None:
@@ -361,14 +820,22 @@ class PlaywrightAutomationEngine:
             
             screenshot_path = self.screenshots_dir / name
             
-            await self.page.screenshot(
-                path=str(screenshot_path),
-                full_page=full_page
+            # Use fast screenshot with timeout to prevent 60-second delays
+            await asyncio.wait_for(
+                self.page.screenshot(
+                    path=str(screenshot_path),
+                    full_page=full_page,
+                    timeout=10000  # 10 seconds max for screenshot
+                ),
+                timeout=12  # Overall timeout of 12 seconds
             )
             
             self.logger.debug(f"📸 Screenshot saved: {screenshot_path}")
             return str(screenshot_path)
             
+        except asyncio.TimeoutError:
+            self.logger.warning(f"⚠️ Screenshot timeout for {name} - skipping")
+            return ""
         except Exception as e:
             log_error(e, "take_screenshot")
             return ""
@@ -918,6 +1385,500 @@ class PlaywrightAutomationEngine:
             log_error(e, "handle_download")
             return None
     
+    async def wait_for_loading_complete(self, timeout: int = None) -> bool:
+        """Enhanced loading detection with multiple strategies"""
+        if timeout is None:
+            timeout = self.config.automation.loading_detection_timeout
+            
+        self.logger.info("🔄 Waiting for page loading to complete...")
+        
+        try:
+            # Strategy 1: Wait for network idle
+            await self.page.wait_for_load_state('networkidle', timeout=timeout // 3)
+            self.logger.debug("✅ Network idle detected")
+            
+            # Strategy 2: Wait for DOM content loaded
+            await self.page.wait_for_load_state('domcontentloaded', timeout=timeout // 3)
+            self.logger.debug("✅ DOM content loaded")
+            
+            # Strategy 3: Check for common loading indicators
+            loading_selectors = [
+                '[data-testid="loading"]',
+                '.loading',
+                '.spinner',
+                '[aria-label*="Loading"]',
+                '[aria-label*="loading"]',
+                '.progress-bar',
+                '.loading-spinner',
+                '.mat-progress-spinner',
+                '.mat-spinner',
+                'mat-progress-spinner',
+                'mat-spinner',
+                '[role="progressbar"]',
+                '.cfc-loading',
+                '.p6n-loading',
+                '.gb_g', # Google loading indicator
+                '.VfPpkd-Bz112c-LgbsSe', # Material Design loading
+            ]
+            
+            # Wait for loading indicators to disappear
+            for selector in loading_selectors:
+                try:
+                    # Check if loading indicator exists
+                    if await self.page.locator(selector).count() > 0:
+                        self.logger.debug(f"⏳ Waiting for loading indicator to disappear: {selector}")
+                        await self.page.wait_for_selector(selector, state='detached', timeout=timeout // 6)
+                        self.logger.debug(f"✅ Loading indicator disappeared: {selector}")
+                except Exception:
+                    # Loading indicator might not exist or already gone
+                    continue
+            
+            # Strategy 4: Wait for JavaScript execution to stabilize
+            await self._wait_for_js_stability()
+            
+            # Strategy 5: Additional delay for UI stabilization
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+            
+            self.logger.info("✅ Page loading completed successfully")
+            return True
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Loading detection timeout or error: {str(e)}")
+            # Even if loading detection fails, continue with a reasonable delay
+            await asyncio.sleep(3.0)
+            return False
+
+    async def _wait_for_js_stability(self, max_attempts: int = 5) -> bool:
+        """Wait for JavaScript execution to stabilize"""
+        try:
+            for attempt in range(max_attempts):
+                # Check if page is still executing JavaScript
+                is_stable = await self.page.evaluate("""
+                    () => {
+                        // Check for common indicators of ongoing JS execution
+                        const hasActiveRequests = window.fetch && window.fetch.activeRequests > 0;
+                        const hasActiveTimers = window.setTimeout && window.setTimeout.activeCount > 0;
+                        const hasActiveAnimations = document.getAnimations && document.getAnimations().length > 0;
+                        
+                        // Check for React/Angular loading states
+                        const hasReactLoading = window.React && document.querySelector('[data-reactroot]') && 
+                                              document.querySelector('.loading, .spinner, [aria-busy="true"]');
+                        const hasAngularLoading = window.angular && document.querySelector('[ng-app]') &&
+                                                document.querySelector('.loading, .spinner, [aria-busy="true"]');
+                        
+                        return !hasActiveRequests && !hasActiveTimers && !hasActiveAnimations && 
+                               !hasReactLoading && !hasAngularLoading;
+                    }
+                """)
+                
+                if is_stable:
+                    self.logger.debug("✅ JavaScript execution stabilized")
+                    return True
+                
+                await asyncio.sleep(0.5)
+            
+            self.logger.debug("⚠️ JavaScript stability check timed out")
+            return False
+            
+        except Exception as e:
+            self.logger.debug(f"⚠️ JavaScript stability check failed: {str(e)}")
+            return False
+
+    async def wait_for_project_creation_complete(self, timeout: int = None) -> bool:
+        """Enhanced waiting for project creation with multiple verification strategies"""
+        if timeout is None:
+            timeout = self.config.automation.project_creation_timeout
+            
+        self.logger.info("🏗️ Waiting for project creation to complete...")
+        start_time = time.time()
+        
+        try:
+            # Strategy 1: Wait for loading indicators to disappear
+            await self.wait_for_loading_complete(timeout // 4)
+            
+            # Strategy 2: Look for success indicators
+            success_indicators = [
+                # Project dashboard elements
+                '[data-testid="project-dashboard"]',
+                '[aria-label*="Project dashboard"]',
+                '.project-dashboard',
+                
+                # Navigation elements that appear after project creation
+                '[data-testid="navigation"]',
+                '.console-nav',
+                '.p6n-nav',
+                
+                # Project selector elements
+                '[data-testid="project-selector"]',
+                '.project-selector',
+                '.cfc-project-selector',
+                
+                # APIs & Services page elements
+                '[href*="/apis/dashboard"]',
+                '[data-testid="apis-dashboard"]',
+                'text=APIs & services',
+                'text=API Library',
+                
+                # Billing or other setup pages
+                'text=Billing',
+                'text=Enable billing',
+                
+                # Generic success indicators
+                '.success-message',
+                '[data-testid="success"]',
+                '[aria-label*="Success"]',
+                
+                # Google Cloud Console specific elements
+                '.console-header',
+                '.cfc-header',
+                '.p6n-header'
+            ]
+            
+            # Wait for any success indicator to appear
+            success_detected = False
+            for indicator in success_indicators:
+                try:
+                    await self.page.wait_for_selector(indicator, timeout=timeout // 8)
+                    self.logger.info(f"✅ Success indicator found: {indicator}")
+                    success_detected = True
+                    break
+                except Exception:
+                    continue
+            
+            # Strategy 3: Check URL changes that indicate successful creation
+            current_url = self.page.url
+            if any(pattern in current_url.lower() for pattern in [
+                '/dashboard', '/apis', '/billing', '/iam', '/compute', '/storage'
+            ]):
+                self.logger.info(f"✅ URL indicates successful project creation: {current_url}")
+                success_detected = True
+            
+            # Strategy 4: Wait for page title to change
+            try:
+                await self.page.wait_for_function(
+                    "document.title && document.title.length > 0 && !document.title.includes('Loading')",
+                    timeout=timeout // 6
+                )
+                title = await self.page.title()
+                if title and 'loading' not in title.lower():
+                    self.logger.info(f"✅ Page title indicates completion: {title}")
+                    success_detected = True
+            except Exception:
+                pass
+            
+            # Strategy 5: Final stability check
+            if success_detected:
+                await self._wait_for_js_stability()
+                await asyncio.sleep(random.uniform(2.0, 4.0))  # Additional stabilization
+                
+                elapsed_time = time.time() - start_time
+                self.logger.info(f"✅ Project creation completed successfully in {elapsed_time:.1f}s")
+                return True
+            
+            # If no success indicators found, wait a bit more and check again
+            remaining_time = timeout - (time.time() - start_time)
+            if remaining_time > 10:
+                self.logger.info("⏳ No immediate success indicators, waiting longer...")
+                await asyncio.sleep(min(10, remaining_time))
+                return await self._verify_project_creation_success()
+            
+            self.logger.warning("⚠️ Project creation verification timed out")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error during project creation verification: {str(e)}")
+            return False
+
+    async def _verify_project_creation_success(self) -> bool:
+        """Final verification that project creation was successful"""
+        try:
+            # Check if we're on a project-related page
+            current_url = self.page.url
+            
+            # Look for project-specific elements
+            project_elements = [
+                '[data-testid*="project"]',
+                '.project-info',
+                '.project-header',
+                'text=Project ID',
+                'text=Project Number',
+                '[aria-label*="project"]'
+            ]
+            
+            for element in project_elements:
+                if await self.page.locator(element).count() > 0:
+                    self.logger.info(f"✅ Project element found: {element}")
+                    return True
+            
+            # Check URL patterns
+            if any(pattern in current_url.lower() for pattern in [
+                'console.cloud.google.com',
+                '/project',
+                '/dashboard',
+                '/apis'
+            ]):
+                self.logger.info("✅ URL indicates we're in a project context")
+                return True
+            
+            # Check page title
+            title = await self.page.title()
+            if title and any(keyword in title.lower() for keyword in [
+                'console', 'dashboard', 'project', 'google cloud'
+            ]):
+                self.logger.info(f"✅ Page title indicates project context: {title}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.debug(f"Project verification check failed: {str(e)}")
+            return False
+
+    async def wait_for_element_stable(self, selector: str, timeout: int = 30) -> bool:
+        """Wait for an element to be stable (not moving or changing)"""
+        try:
+            # First wait for element to exist
+            await self.page.wait_for_selector(selector, timeout=timeout)
+            
+            # Then wait for it to be stable
+            element = self.page.locator(selector)
+            
+            # Check element position stability
+            for _ in range(5):  # Check 5 times with delays
+                try:
+                    box1 = await element.bounding_box()
+                    await asyncio.sleep(0.2)
+                    box2 = await element.bounding_box()
+                    
+                    if box1 and box2:
+                        # Check if position is stable
+                        if (abs(box1['x'] - box2['x']) < 1 and 
+                            abs(box1['y'] - box2['y']) < 1 and
+                            abs(box1['width'] - box2['width']) < 1 and
+                            abs(box1['height'] - box2['height']) < 1):
+                            self.logger.debug(f"✅ Element stable: {selector}")
+                            return True
+                except Exception:
+                    continue
+            
+            # If position checks fail, just ensure element is visible and enabled
+            await element.wait_for(state='visible', timeout=5)
+            if await element.is_enabled():
+                return True
+                
+            return False
+            
+        except Exception as e:
+            self.logger.debug(f"Element stability check failed for {selector}: {str(e)}")
+            return False
+
+    async def enhanced_create_button_click(self, button_text: str = "Create", timeout: int = None, context: str = "button") -> bool:
+        """Enhanced create button detection and clicking with comprehensive fallback strategies"""
+        if timeout is None:
+            timeout = self.config.automation.create_button_wait_timeout
+            
+        self.logger.info(f"🔍 Looking for {button_text} button with enhanced detection...")
+        
+        # Strategy 1: Primary selectors with exact and partial text matching
+        primary_selectors = [
+            f'button:has-text("{button_text}")',
+            f'button:has-text("{button_text.upper()}")',
+            f'button:has-text("{button_text.lower()}")',
+            f'button:visible:has-text("{button_text}")',
+            f'[role="button"]:has-text("{button_text}")',
+            f'button[aria-label*="{button_text}"]',
+            f'button[aria-label*="{button_text.lower()}"]',
+            f'input[type="submit"][value*="{button_text}"]',
+            f'button[type="submit"]:has-text("{button_text}")',
+        ]
+        
+        # Strategy 2: Material Design and framework-specific selectors
+        material_selectors = [
+            f'button.mat-raised-button:has-text("{button_text}")',
+            f'button.mat-button:has-text("{button_text}")',
+            f'button.mat-flat-button:has-text("{button_text}")',
+            f'button.mat-stroked-button:has-text("{button_text}")',
+            f'button.mdc-button:has-text("{button_text}")',
+            f'.VfPpkd-LgbsSe:has-text("{button_text}")',  # Google Material Design
+            f'.VfPpkd-Bz112c:has-text("{button_text}")',
+        ]
+        
+        # Strategy 3: CSS class-based selectors
+        class_selectors = [
+            f'button[class*="{button_text.lower()}"]',
+            f'button[class*="submit"]',
+            f'button[class*="primary"]',
+            f'button[class*="action"]',
+            f'.{button_text.lower()}-button',
+            f'.{button_text.lower()}-btn',
+            f'.btn-{button_text.lower()}',
+            f'.button-{button_text.lower()}',
+        ]
+        
+        # Strategy 4: Data attribute selectors
+        data_selectors = [
+            f'button[data-testid*="{button_text.lower()}"]',
+            f'button[data-action*="{button_text.lower()}"]',
+            f'button[data-cy*="{button_text.lower()}"]',
+            f'[data-testid*="{button_text.lower()}-button"]',
+            f'[data-testid*="submit"]',
+            f'[data-action="submit"]',
+        ]
+        
+        # Combine all selector strategies
+        all_selectors = primary_selectors + material_selectors + class_selectors + data_selectors
+        
+        # Strategy 5: Try each selector with stability checking
+        for i, selector in enumerate(all_selectors):
+            try:
+                self.logger.debug(f"🔍 Trying selector {i+1}/{len(all_selectors)}: {selector}")
+                
+                # Wait for element to exist
+                await self.page.wait_for_selector(selector, timeout=timeout // len(all_selectors))
+                
+                # Check if element is stable
+                if await self.wait_for_element_stable(selector, timeout=5):
+                    element = self.page.locator(selector)
+                    
+                    # Ensure element is visible and enabled
+                    await element.wait_for(state='visible', timeout=3)
+                    if await element.is_enabled():
+                        # Scroll element into view
+                        await element.scroll_into_view_if_needed()
+                        await asyncio.sleep(0.5)
+                        
+                        # Try clicking
+                        await element.click()
+                        self.logger.info(f"✅ {button_text} button clicked successfully with: {selector}")
+                        return True
+                        
+            except Exception as e:
+                self.logger.debug(f"Selector failed: {selector} - {str(e)}")
+                continue
+        
+        # Strategy 6: Fuzzy text matching fallback
+        self.logger.info(f"🔄 Trying fuzzy text matching for {button_text} button...")
+        try:
+            # Find all buttons and check their text content
+            all_buttons = await self.page.locator('button, [role="button"], input[type="submit"]').all()
+            
+            for button in all_buttons:
+                try:
+                    # Get button text content
+                    text_content = await button.text_content()
+                    inner_text = await button.inner_text()
+                    aria_label = await button.get_attribute('aria-label')
+                    value = await button.get_attribute('value')
+                    
+                    # Check all text sources
+                    texts_to_check = [text_content, inner_text, aria_label, value]
+                    
+                    for text in texts_to_check:
+                        if text and button_text.lower() in text.lower():
+                            if await button.is_visible() and await button.is_enabled():
+                                await button.scroll_into_view_if_needed()
+                                await asyncio.sleep(0.5)
+                                await button.click()
+                                self.logger.info(f"✅ {button_text} button clicked using fuzzy matching: '{text}'")
+                                return True
+                                
+                except Exception:
+                    continue
+                    
+        except Exception as e:
+            self.logger.debug(f"Fuzzy matching failed: {str(e)}")
+        
+        # Strategy 7: Frame-aware search
+        self.logger.info(f"🔄 Searching for {button_text} button in frames...")
+        try:
+            for frame in self.page.frames:
+                try:
+                    # Try primary selectors in each frame
+                    for selector in primary_selectors[:5]:  # Use top 5 selectors
+                        try:
+                            element = frame.locator(selector)
+                            if await element.count() > 0:
+                                await element.first.scroll_into_view_if_needed()
+                                await asyncio.sleep(0.5)
+                                await element.first.click()
+                                self.logger.info(f"✅ {button_text} button clicked in frame with: {selector}")
+                                return True
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+        except Exception as e:
+            self.logger.debug(f"Frame search failed: {str(e)}")
+        
+        # Strategy 8: JavaScript-based fallback
+        self.logger.info(f"🔄 Trying JavaScript-based {button_text} button detection...")
+        try:
+            button_found = await self.page.evaluate(f"""
+                () => {{
+                    const buttonText = '{button_text}';
+                    
+                    // Find all clickable elements
+                    const clickableElements = document.querySelectorAll('button, [role="button"], input[type="submit"], a');
+                    
+                    for (const element of clickableElements) {{
+                        const text = element.textContent || element.innerText || element.value || element.getAttribute('aria-label') || '';
+                        
+                        if (text.toLowerCase().includes(buttonText.toLowerCase())) {{
+                            // Check if element is visible and not disabled
+                            const rect = element.getBoundingClientRect();
+                            const isVisible = rect.width > 0 && rect.height > 0 && 
+                                            window.getComputedStyle(element).visibility !== 'hidden' &&
+                                            window.getComputedStyle(element).display !== 'none';
+                            
+                            if (isVisible && !element.disabled) {{
+                                element.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                                setTimeout(() => element.click(), 500);
+                                return true;
+                            }}
+                        }}
+                    }}
+                    return false;
+                }}
+            """)
+            
+            if button_found:
+                await asyncio.sleep(1.0)  # Wait for the click to process
+                self.logger.info(f"✅ {button_text} button clicked using JavaScript fallback")
+                return True
+                
+        except Exception as e:
+            self.logger.debug(f"JavaScript fallback failed: {str(e)}")
+        
+        # Strategy 9: Force click on any submit-type element
+        self.logger.info(f"🔄 Trying force click on submit elements...")
+        try:
+            submit_selectors = [
+                'button[type="submit"]',
+                'input[type="submit"]',
+                'button:last-of-type',  # Often the primary action button
+                '.primary-button',
+                '.submit-button',
+                '.action-button'
+            ]
+            
+            for selector in submit_selectors:
+                try:
+                    element = self.page.locator(selector)
+                    if await element.count() > 0:
+                        await element.first.scroll_into_view_if_needed()
+                        await asyncio.sleep(0.5)
+                        await element.first.click()
+                        self.logger.info(f"✅ Submit element clicked with: {selector}")
+                        return True
+                except Exception:
+                    continue
+                    
+        except Exception as e:
+            self.logger.debug(f"Force submit click failed: {str(e)}")
+        
+        self.logger.error(f"❌ Could not find or click {button_text} button after trying all strategies")
+        return False
+
     async def cleanup(self):
         """Clean up browser resources"""
         try:

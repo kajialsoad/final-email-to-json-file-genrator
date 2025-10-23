@@ -75,6 +75,7 @@ class GmailOAuthGUI:
         self.single_password = StringVar()
         
         # Settings
+        self.automation_framework = StringVar(value=self.config.automation.framework)
         self.headless_mode = BooleanVar(value=self.config.browser.headless)
         self.stealth_mode = BooleanVar(value=self.config.browser.stealth_mode)
         self.retry_attempts = IntVar(value=self.config.automation.max_retries)
@@ -268,43 +269,49 @@ class GmailOAuthGUI:
         # Automation settings
         ttk.Label(scrollable_frame, text="Automation Settings:", style='Header.TLabel').grid(row=3, column=0, sticky=W, pady=(12, 6))
         
-        ttk.Label(scrollable_frame, text="Retry Attempts:").grid(row=4, column=0, sticky=W, pady=2)
-        retry_spin = ttk.Spinbox(scrollable_frame, from_=1, to=10, textvariable=self.retry_attempts, width=10)
-        retry_spin.grid(row=4, column=1, sticky=W, padx=(10, 0), pady=2)
+        # Framework selection
+        ttk.Label(scrollable_frame, text="Automation Framework:").grid(row=4, column=0, sticky=W, pady=2)
+        framework_combo = ttk.Combobox(scrollable_frame, textvariable=self.automation_framework, 
+                                     values=["playwright", "selenium"], state="readonly", width=15)
+        framework_combo.grid(row=4, column=1, sticky=W, padx=(10, 0), pady=2)
         
-        ttk.Label(scrollable_frame, text="Concurrent Limit:").grid(row=5, column=0, sticky=W, pady=2)
+        ttk.Label(scrollable_frame, text="Retry Attempts:").grid(row=5, column=0, sticky=W, pady=2)
+        retry_spin = ttk.Spinbox(scrollable_frame, from_=1, to=10, textvariable=self.retry_attempts, width=10)
+        retry_spin.grid(row=5, column=1, sticky=W, padx=(10, 0), pady=2)
+        
+        ttk.Label(scrollable_frame, text="Concurrent Limit:").grid(row=6, column=0, sticky=W, pady=2)
         concurrent_spin = ttk.Spinbox(scrollable_frame, from_=1, to=5, textvariable=self.concurrent_limit, width=10)
-        concurrent_spin.grid(row=5, column=1, sticky=W, padx=(10, 0), pady=2)
+        concurrent_spin.grid(row=6, column=1, sticky=W, padx=(10, 0), pady=2)
         
         # Approver Email Settings
-        ttk.Label(scrollable_frame, text="Approver Email Settings:", style='Header.TLabel').grid(row=6, column=0, sticky=W, pady=(12, 6))
+        ttk.Label(scrollable_frame, text="Approver Email Settings:", style='Header.TLabel').grid(row=7, column=0, sticky=W, pady=(12, 6))
         
         # Enable approver functionality
-        ttk.Checkbutton(scrollable_frame, text="Enable Approver Email Functionality", variable=self.approver_enabled).grid(row=7, column=0, columnspan=2, sticky=W, pady=2)
+        ttk.Checkbutton(scrollable_frame, text="Enable Approver Email Functionality", variable=self.approver_enabled).grid(row=8, column=0, columnspan=2, sticky=W, pady=2)
         
         # Approver email
-        ttk.Label(scrollable_frame, text="Approver Email:").grid(row=8, column=0, sticky=W, pady=2)
+        ttk.Label(scrollable_frame, text="Approver Email:").grid(row=9, column=0, sticky=W, pady=2)
         approver_email_entry = ttk.Entry(scrollable_frame, textvariable=self.approver_email, width=30)
-        approver_email_entry.grid(row=8, column=1, sticky=W, padx=(10, 0), pady=2)
+        approver_email_entry.grid(row=9, column=1, sticky=W, padx=(10, 0), pady=2)
         
         # Approver password
-        ttk.Label(scrollable_frame, text="Approver Password:").grid(row=9, column=0, sticky=W, pady=2)
+        ttk.Label(scrollable_frame, text="Approver Password:").grid(row=10, column=0, sticky=W, pady=2)
         approver_password_entry = ttk.Entry(scrollable_frame, textvariable=self.approver_password, show="*", width=30)
-        approver_password_entry.grid(row=9, column=1, sticky=W, padx=(10, 0), pady=2)
+        approver_password_entry.grid(row=10, column=1, sticky=W, padx=(10, 0), pady=2)
         
         # Auto handle verification
-        ttk.Checkbutton(scrollable_frame, text="Auto Handle Verification Emails", variable=self.auto_handle_verification).grid(row=10, column=0, columnspan=2, sticky=W, pady=2)
+        ttk.Checkbutton(scrollable_frame, text="Auto Handle Verification Emails", variable=self.auto_handle_verification).grid(row=11, column=0, columnspan=2, sticky=W, pady=2)
         
         # Handle speedbump popup
-        ttk.Checkbutton(scrollable_frame, text="Auto Click 'আমি বুঝি' Button", variable=self.handle_speedbump_popup).grid(row=11, column=0, columnspan=2, sticky=W, pady=2)
+        ttk.Checkbutton(scrollable_frame, text="Auto Click 'আমি বুঝি' Button", variable=self.handle_speedbump_popup).grid(row=12, column=0, columnspan=2, sticky=W, pady=2)
         
         # Info text
         info_text = "Approver email will be used to check for verification emails\nwhen Gmail accounts require additional verification."
-        ttk.Label(scrollable_frame, text=info_text, foreground='gray', font=('Arial', 9)).grid(row=12, column=0, columnspan=2, sticky=W, pady=(5, 10))
+        ttk.Label(scrollable_frame, text=info_text, foreground='gray', font=('Arial', 9)).grid(row=13, column=0, columnspan=2, sticky=W, pady=(5, 10))
         
         # Save settings button
         save_btn = ttk.Button(scrollable_frame, text="Save Settings", command=self.save_settings)
-        save_btn.grid(row=13, column=0, columnspan=2, pady=12)
+        save_btn.grid(row=14, column=0, columnspan=2, pady=12)
     
     def setup_progress_section(self, parent):
         """Setup progress tracking section"""
@@ -712,6 +719,7 @@ class GmailOAuthGUI:
     
     def _update_config_from_gui(self):
         """Update configuration from GUI settings"""
+        self.config.automation.framework = self.automation_framework.get()
         self.config.browser.headless = self.headless_mode.get()
         self.config.browser.stealth_mode = self.stealth_mode.get()
         self.config.automation.max_retries = self.retry_attempts.get()
@@ -734,23 +742,17 @@ class GmailOAuthGUI:
         """Save current settings"""
         try:
             self._update_config_from_gui()
-            config_manager = ConfigManager()
-            
-            # Update the config manager's approver settings
-            config_manager.approver.enabled = self.config.approver.enabled
-            config_manager.approver.approver_email = self.config.approver.approver_email
-            config_manager.approver.approver_password = self.config.approver.approver_password
-            config_manager.approver.auto_handle_verification = self.config.approver.auto_handle_verification
-            config_manager.approver.handle_speedbump_popup = self.config.approver.handle_speedbump_popup
-            
-            config_manager.save_config()
-            self.log_message("✅ Settings saved", "SUCCESS")
-            messagebox.showinfo("Success", "Settings saved successfully")
+            # Persist updated configuration directly
+            if self.config.save_config():
+                self.log_message("✅ Settings saved", "SUCCESS")
+                messagebox.showinfo("Success", "Settings saved successfully")
+            else:
+                raise Exception("Failed to save configuration")
         except Exception as e:
             error_msg = f"Error saving settings: {str(e)}"
             self.log_message(error_msg, "ERROR")
             messagebox.showerror("Error", error_msg)
-    
+
     def open_output_folder(self):
         """Open output folder"""
         try:

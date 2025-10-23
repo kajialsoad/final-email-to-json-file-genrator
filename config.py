@@ -7,8 +7,9 @@ Centralized configuration for the Gmail OAuth automation
 
 import os
 import json
+import random
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
@@ -19,38 +20,223 @@ class BrowserConfig:
     stealth_mode: bool = True
     viewport_width: int = 1366  # Better compatibility with Google's responsive design
     viewport_height: int = 768   # Standard laptop resolution
-    user_agent: str = ""
-    timeout: int = 60000  # Increased from 30000 to 60000 (60 seconds)
-    navigation_timeout: int = 90000  # Increased from 60000 to 90000 (90 seconds)
-    slow_mo: int = 0
+    user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"  # Latest Chrome user agent
+    timeout: int = 30000  # Reduced from 60000 to 30000 (30 seconds) - faster screenshot timeout
+    navigation_timeout: int = 45000  # Reduced from 90000 to 45000 (45 seconds) - faster navigation
+    slow_mo: int = 50  # Reduced from 100 to 50 - faster actions while still human-like
     devtools: bool = False
     disable_web_security: bool = False
     ignore_https_errors: bool = True
     window_position_x: int = 100  # X position for browser window
     window_position_y: int = 100  # Y position for browser window
     force_device_scale_factor: float = 1.0  # Device scale factor for high DPI displays
-    disable_animations: bool = False  # Allow minimal animations for better Google UI compatibility
+    disable_animations: bool = True  # Changed to True - disable animations for faster loading
     # Optional browser channel (e.g., "chrome", "chrome-beta", "msedge")
     browser_channel: str = ""
     # Use persistent (non-incognito) context to retain cookies/storage
     use_persistent_context: bool = True
+    # Anti-detection settings
+    randomize_viewport: bool = True  # Randomize viewport size slightly
+    use_real_chrome_profile: bool = True  # Use real Chrome profile path
+    disable_automation_flags: bool = True  # Remove automation indicators
+    # Enhanced anti-detection measures
+    randomize_user_agent: bool = True  # Randomize user agent from pool
+    randomize_timing: bool = True  # Add random delays to actions
+    use_realistic_mouse_movements: bool = True  # Simulate realistic mouse movements
+    vary_typing_speed: bool = True  # Vary typing speed to appear human
     
+    def get_random_user_agent(self) -> str:
+        """Get a random user agent from a pool of realistic options"""
+        user_agents = [
+            # Chrome on Windows
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            
+            # Chrome on macOS
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            
+            # Chrome on Linux
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            
+            # Firefox on Windows
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+            "Mozilla/5.0 (Windows NT 11.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+            
+            # Firefox on macOS
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
+            
+            # Safari on macOS
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1.2 Safari/605.1.15",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15",
+            
+            # Edge on Windows
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+            "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
+            
+            # Chrome on Android (mobile)
+            "Mozilla/5.0 (Linux; Android 14; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36",
+            
+            # Safari on iOS (mobile)
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (iPad; CPU OS 17_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1"
+        ]
+        return random.choice(user_agents) if self.randomize_user_agent else self.user_agent
+    
+    def get_random_viewport(self) -> tuple[int, int]:
+        """Get randomized viewport dimensions"""
+        if not self.randomize_viewport:
+            return (self.viewport_width, self.viewport_height)
+        
+        # Common viewport sizes with slight randomization
+        base_viewports = [
+            (1366, 768), (1920, 1080), (1440, 900), (1536, 864),
+            (1280, 720), (1600, 900), (1024, 768), (1280, 800)
+        ]
+        
+        base_width, base_height = random.choice(base_viewports)
+        # Add small random variation (±50 pixels)
+        width = base_width + random.randint(-50, 50)
+        height = base_height + random.randint(-50, 50)
+        
+        # Ensure minimum viable size
+        width = max(width, 1024)
+        height = max(height, 600)
+        
+        return (width, height)
+
 @dataclass
 class AutomationConfig:
-    """Automation behavior settings"""
-    max_retries: int = 3
-    retry_delay: float = 3.0  # Increased from 2.0 to 3.0
-    human_delay_min: float = 1.0  # Increased from 0.5 to 1.0
-    human_delay_max: float = 3.0  # Increased from 2.0 to 3.0
-    typing_delay_min: int = 50
-    typing_delay_max: int = 150
+    """Automation configuration settings"""
+    framework: str = "playwright"  # "playwright" or "selenium"
+    max_retries: int = 2  # Reduced from 3 to 2 - fewer retries for faster execution
+    retry_delay: float = 1.5  # Reduced from 3.0 to 1.5 - faster retry delays
+    human_delay_min: float = 0.3  # Reduced from 1.0 to 0.3 - faster human delays
+    human_delay_max: float = 1.5  # Reduced from 3.0 to 1.5 - faster human delays
+    typing_delay_min: int = 30  # Reduced from 50 to 30 - faster typing
+    typing_delay_max: int = 80  # Reduced from 150 to 80 - faster typing
     screenshot_on_error: bool = True
     screenshot_on_success: bool = False
     concurrent_limit: int = 3
-    project_creation_timeout: int = 120000  # New: 2 minutes for project creation
-    project_selection_timeout: int = 60000   # New: 1 minute for project selection
-    api_enablement_timeout: int = 90000      # New: 1.5 minutes for API enablement
+    project_creation_timeout: int = 90000  # Reduced from 180000 to 90000 (1.5 minutes)
+    project_selection_timeout: int = 45000   # Reduced from 90000 to 45000 (45 seconds)
+    api_enablement_timeout: int = 60000     # Reduced from 120000 to 60000 (1 minute)
+    oauth_consent_timeout: int = 45000       # Reduced from 90000 to 45000 (45 seconds)
+    credentials_creation_timeout: int = 60000  # Reduced from 120000 to 60000 (1 minute)
+    # Human-like interaction delays
+    action_delay_min: float = 0.2  # Reduced from 0.5 to 0.2 - faster actions
+    action_delay_max: float = 1.0  # Reduced from 2.0 to 1.0 - faster actions
+    click_delay_min: float = 0.05   # Reduced from 0.1 to 0.05 - faster clicks
+    click_delay_max: float = 0.3   # Reduced from 0.5 to 0.3 - faster clicks
+    form_fill_delay_min: float = 0.4  # Reduced from 0.8 to 0.4 - faster form filling
+    form_fill_delay_max: float = 1.5  # Reduced from 2.5 to 1.5 - faster form filling
+    # Loading and waiting configurations
+    max_loading_wait: int = 30000  # Reduced from 60000 to 30000 (30 seconds)
+    loading_check_interval: int = 1000  # Reduced from 2000 to 1000 - check more frequently
+    # Project creation specific settings
+    project_creation_max_attempts: int = 3  # Reduced from 5 to 3 - fewer attempts for faster execution
+    project_verification_attempts: int = 2  # Reduced from 3 to 2 - fewer verification attempts
+    create_button_wait_timeout: int = 15000  # Reduced from 30000 to 15000 (15 seconds)
+    form_load_timeout: int = 25000  # Reduced from 45000 to 25000 (25 seconds)
     
+    # Enhanced project creation timeouts (all significantly reduced)
+    project_navigation_timeout: int = 25000  # Reduced from 45000 to 25000 (25 seconds)
+    project_form_interaction_timeout: int = 30000  # Reduced from 60000 to 30000 (30 seconds)
+    project_submission_timeout: int = 60000  # Reduced from 120000 to 60000 (1 minute)
+    project_creation_verification_timeout: int = 90000  # Reduced from 180000 to 90000 (1.5 minutes)
+    project_api_dashboard_timeout: int = 45000  # Reduced from 90000 to 45000 (45 seconds)
+    project_selector_update_timeout: int = 30000  # Reduced from 60000 to 30000 (30 seconds)
+    
+    # Network and loading timeouts (all reduced)
+    project_network_idle_timeout: int = 15000  # Reduced from 30000 to 15000 (15 seconds)
+    project_dom_content_timeout: int = 10000  # Reduced from 20000 to 10000 (10 seconds)
+    project_page_load_timeout: int = 25000  # Reduced from 45000 to 25000 (25 seconds)
+    
+    # Element interaction timeouts (all reduced)
+    project_element_visible_timeout: int = 8000  # Reduced from 15000 to 8000 (8 seconds)
+    project_element_clickable_timeout: int = 5000  # Reduced from 10000 to 5000 (5 seconds)
+    project_element_stable_timeout: int = 3000  # Reduced from 5000 to 3000 (3 seconds)
+    
+    # Verification timeouts (all reduced)
+    verification_initial_wait: int = 4000  # Reduced from 8000 to 4000 (4 seconds)
+    verification_network_stabilization: int = 3000  # Reduced from 5000 to 3000 (3 seconds)
+    verification_retry_delay: int = 2000  # Reduced from 3000 to 2000 (2 seconds)
+    verification_url_change_timeout: int = 15000  # Reduced from 30000 to 15000 (15 seconds)
+    verification_content_check_timeout: int = 8000  # Reduced from 15000 to 8000 (8 seconds)
+
+@dataclass
+class ProjectCreationTimeouts:
+    """Centralized timeout configuration for project creation workflow"""
+    # Main workflow phase timeouts (all significantly reduced)
+    navigation: int = 25000  # Reduced from 45000 to 25000 - Navigating to project creation page
+    form_interaction: int = 30000  # Reduced from 60000 to 30000 - Form interactions and filling
+    submission: int = 60000  # Reduced from 120000 to 60000 - Project submission processing
+    verification: int = 90000  # Reduced from 180000 to 90000 - Verifying project creation success
+    api_dashboard: int = 45000  # Reduced from 90000 to 45000 - Accessing API dashboard
+    selector_update: int = 30000  # Reduced from 60000 to 30000 - Project selector update
+    
+    # Network and loading timeouts (all reduced)
+    network_idle: int = 15000  # Reduced from 30000 to 15000 - Network idle state
+    dom_content: int = 10000  # Reduced from 20000 to 10000 - DOM content loaded
+    page_load: int = 25000  # Reduced from 45000 to 25000 - Complete page load
+    
+    # Element interaction timeouts (all reduced)
+    element_visible: int = 8000  # Reduced from 15000 to 8000 - Elements to become visible
+    element_clickable: int = 5000  # Reduced from 10000 to 5000 - Elements to become clickable
+    element_stable: int = 3000  # Reduced from 5000 to 3000 - Elements to stabilize
+    
+    # Verification phase timeouts (all reduced)
+    initial_wait: int = 4000  # Reduced from 8000 to 4000 - Initial wait before verification
+    network_stabilization: int = 3000  # Reduced from 5000 to 3000 - Network stabilization
+    retry_delay: int = 2000  # Reduced from 3000 to 2000 - Delay between verification attempts
+    url_change: int = 15000  # Reduced from 30000 to 15000 - URL changes
+    content_check: int = 8000  # Reduced from 15000 to 8000 - Content verification
+    
+    # UI interaction timeouts (all reduced)
+    create_button_wait: int = 15000  # Reduced from 30000 to 15000 - Create button to appear
+    form_load: int = 25000  # Reduced from 45000 to 25000 - Project creation form to load
+    
+    def get_timeout(self, phase: str) -> int:
+        """Get timeout for a specific phase"""
+        return getattr(self, phase, 30000)  # Default to 30 seconds
+    
+    def get_all_timeouts(self) -> dict:
+        """Get all timeout configurations as a dictionary"""
+        return {
+            'navigation': self.navigation,
+            'form_interaction': self.form_interaction,
+            'submission': self.submission,
+            'verification': self.verification,
+            'api_dashboard': self.api_dashboard,
+            'selector_update': self.selector_update,
+            'network_idle': self.network_idle,
+            'dom_content': self.dom_content,
+            'page_load': self.page_load,
+            'element_visible': self.element_visible,
+            'element_clickable': self.element_clickable,
+            'element_stable': self.element_stable,
+            'initial_wait': self.initial_wait,
+            'network_stabilization': self.network_stabilization,
+            'retry_delay': self.retry_delay,
+            'url_change': self.url_change,
+            'content_check': self.content_check,
+            'create_button_wait': self.create_button_wait,
+            'form_load': self.form_load
+        }
+
 @dataclass
 class PathConfig:
     """File and directory paths"""
@@ -108,6 +294,7 @@ class ConfigManager:
         self.ui = UIConfig()
         self.security = SecurityConfig()
         self.approver = ApproverConfig()
+        self.project_timeouts = ProjectCreationTimeouts()
         
         # Load existing config if available
         self.load_config()
@@ -181,17 +368,38 @@ class ConfigManager:
         """Get browser launch arguments"""
         args = []
         
+        # Anti-detection arguments (most important)
+        if self.browser.disable_automation_flags:
+            args.extend([
+                '--disable-blink-features=AutomationControlled',
+                '--exclude-switches=enable-automation',
+                '--disable-extensions-except',
+                '--disable-plugins-discovery',
+                '--disable-default-apps',
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--disable-infobars',
+                '--disable-web-security',
+                '--disable-features=TranslateUI',
+                '--disable-ipc-flooding-protection',
+                '--disable-hang-monitor',
+                '--disable-prompt-on-repost',
+                '--disable-background-networking',
+                '--disable-sync',
+                '--metrics-recording-only',
+                '--no-report-upload',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-field-trial-config'
+            ])
+        
         # Basic arguments
         args.extend([
             '--no-sandbox',
-            '--disable-blink-features=AutomationControlled',
             '--disable-dev-shm-usage',
             '--disable-extensions',
-            '--disable-plugins',
-            '--disable-default-apps',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding'
+            '--disable-plugins'
         ])
         
         # UI Stability arguments

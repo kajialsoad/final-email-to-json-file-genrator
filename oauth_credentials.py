@@ -16,16 +16,24 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
 from google_cloud_automation import GoogleCloudAutomation
+from automation_factory import AutomationFactory
 from error_handler import retry_async, log_error, ErrorType, ErrorSeverity
 from email_reporter import email_reporter
+from config import get_config
 
 class OAuthCredentialsManager(GoogleCloudAutomation):
-    """Manages OAuth credential creation and JSON file handling"""
+    """Manages OAuth credential creation and JSON file handling with framework selection"""
     
     def __init__(self):
+        # Initialize Playwright-based automation context
         super().__init__()
+        self.config = get_config()
+        # Create framework-specific automation instance (for Selenium path)
+        self.automation = AutomationFactory.create_automation(self.config)
         self.current_project_id = None
         self.current_email = None
+        # Use logger from underlying automation if available, else default
+        self.logger = getattr(self.automation, 'logger', self.logger)
         
     @retry_async(context="oauth_credentials_creation")
     async def create_oauth_credentials(self, credential_name: str = None) -> Dict[str, Any]:
@@ -293,6 +301,40 @@ class OAuthCredentialsManager(GoogleCloudAutomation):
             self.current_email = email
             self.logger.info(f"Starting complete OAuth setup for {email}")
             
+            # Branch by selected framework
+            framework = self.config.automation.framework.lower()
+            if framework == "selenium":
+                # Use Selenium flow integrated from test driver
+                try:
+                    # Default project name if not provided
+                    if not project_name:
+                        project_name = self._generate_project_name(email)
+                    self.logger.info("🌐 Initializing Selenium browser...")
+                    # Initialize and run Selenium flow in automation instance
+                    selenium_result = await self.automation.create_oauth_client(email, password, project_name)
+                    if selenium_result.get('success'):
+                        result['steps_completed'].append("selenium_flow_completed")
+                        # Attempt to locate downloaded JSON and organize it
+                        downloaded_path = await self._find_downloaded_json()
+                        if downloaded_path:
+                            organize_result = await self.organize_json_file(downloaded_path, email)
+                            if organize_result.get('success'):
+                                result['files_created'].append(organize_result.get('new_path'))
+                        result['success'] = True
+                        result['end_time'] = datetime.now()
+                        self.logger.info("✅ Selenium OAuth setup completed successfully")
+                        return result
+                    else:
+                        error_msg = selenium_result.get('error', 'Selenium flow failed')
+                        result['errors'].append(error_msg)
+                        result['end_time'] = datetime.now()
+                        return result
+                except Exception as e:
+                    result['errors'].append(f"Selenium flow error: {str(e)}")
+                    result['end_time'] = datetime.now()
+                    return result
+            
+            # Playwright flow below
             # Step 0: Initialize browser first
             try:
                 self.logger.info("🌐 Initializing browser...")
@@ -349,9 +391,9 @@ class OAuthCredentialsManager(GoogleCloudAutomation):
                 result['errors'].append(f"Gmail API enable failed: {str(e)}")
                 raise
             
-            # Step 4: Setup OAuth Consent Screen
+            # Step 4: Setup OAuth Consent Screen with complete workflow
             try:
-                await self.setup_oauth_consent_screen()
+                await self.setup_oauth_consent_screen(email)
                 result['steps_completed'].append("oauth_consent")
                 self.logger.info("✅ Step 4: OAuth consent screen configured")
             except Exception as e:
@@ -367,18 +409,35 @@ class OAuthCredentialsManager(GoogleCloudAutomation):
                 result['errors'].append(f"OAuth credentials creation failed: {str(e)}")
                 raise
             
-            # Step 6: Rename JSON File
+            # Step 6: File Explorer Integration and JSON Renaming
             try:
-                rename_success = await self.rename_downloaded_json(email)
-                if rename_success:
-                    result['steps_completed'].append("json_rename")
-                    result['files_created'].append(f"{email.replace('@', '_').replace('.', '_')}.json")
-                    self.logger.info("✅ Step 6: JSON file renamed")
+                file_explorer_success = await self.handle_file_explorer_and_rename(email)
+                if file_explorer_success:
+                    result['steps_completed'].append("file_explorer_integration")
+                    result['files_created'].append(f"{email}.json")
+                    self.logger.info("✅ Step 6: File Explorer integration and JSON renaming completed")
                 else:
-                    self.logger.warning("⚠️ JSON file rename failed, but continuing...")
+                    # Fallback to original rename method
+                    self.logger.info("🔄 Falling back to alternative JSON rename method...")
+                    rename_success = await self.rename_downloaded_json(email)
+                    if rename_success:
+                        result['steps_completed'].append("json_rename_fallback")
+                        result['files_created'].append(f"{email.replace('@', '_').replace('.', '_')}.json")
+                        self.logger.info("✅ Step 6: JSON file renamed (fallback method)")
+                    else:
+                        self.logger.warning("⚠️ JSON file rename failed, but continuing...")
             except Exception as e:
-                self.logger.warning(f"⚠️ JSON rename failed: {str(e)}, but continuing...")
-                result['errors'].append(f"JSON rename failed: {str(e)}")
+                self.logger.warning(f"⚠️ File Explorer integration failed: {str(e)}, trying fallback...")
+                try:
+                    # Fallback to original rename method
+                    rename_success = await self.rename_downloaded_json(email)
+                    if rename_success:
+                        result['steps_completed'].append("json_rename_fallback")
+                        result['files_created'].append(f"{email.replace('@', '_').replace('.', '_')}.json")
+                        self.logger.info("✅ Step 6: JSON file renamed (fallback method)")
+                except Exception as fallback_error:
+                    self.logger.warning(f"⚠️ Fallback rename also failed: {str(fallback_error)}, but continuing...")
+                    result['errors'].append(f"JSON rename failed: {str(e)}, fallback also failed: {str(fallback_error)}")
             
             # Mark as successful
             result['success'] = True
